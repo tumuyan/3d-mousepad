@@ -196,6 +196,8 @@ const P = {
   wMorphRot: 0,       // 肾形朝向（度），180=凹陷转向另一侧
   wRot: 0,            // 双球旋转角（两球反向）
   wEgg: 0,            // 双球鹅蛋度 -0.45..0.45
+  wMargin: 12,        // 等身款：腕托边距
+  topRound: 0.78,     // 经典款：顶部弧度（纵向半径/宽度半径）
   // 材质
   rough: 0.55,
   matColor: '#d9d5cf',   // 材质底色（贴图叠加在其上方）
@@ -310,9 +312,57 @@ const allMats = [];
 
 function regMat(m) { allMats.push(m); m.envMapIntensity = P.env; return m; }
 
+// 经典款：轮廓 = 顶部椭圆 ∪ 腕托外扩椭圆（双球为两个）的并集
+// 以腕托中心为极点做射线采样，取所有椭圆的最远交点，自然形成收腰与双球凹口
+function makeHugShape() {
+  const M = P.wMargin;
+  const topZ = -P.padH / 2;
+  const zBase = P.padH / 2 - P.wPos - P.wD / 2;
+  const rzb = P.wD / 2 + M;
+  const ells = []; // [cx, cz, rx, rz]
+  const rxD = P.padW / 2;
+  const rzD = Math.max(10, P.topRound * rxD);
+  ells.push([0, topZ + rzD, rxD, rzD]);                       // 顶部椭圆
+  if (P.wristStyle === 'balls') {
+    const rxb = P.wBW / 2 + M;
+    if (P.wGap / 2 < rxb) {                                   // 两球相交：各自成圆
+      ells.push([-P.wGap / 2, zBase, rxb, rzb]);
+      ells.push([ P.wGap / 2, zBase, rxb, rzb]);
+    } else {                                                  // 分离太远：合并为单个扁椭圆
+      ells.push([0, zBase, P.wGap / 2 + rxb, rzb]);
+    }
+  } else if (P.wristStyle === 'full') {
+    ells.push([0, zBase, P.wW / 2 + M, rzb]);
+  }
+  // 极点：保证落在并集内部（无腕托时取顶部椭圆中心）
+  const C = { x: 0, z: P.wristStyle === 'none' ? topZ + rzD : zBase };
+  const N = 256;
+  const s = new THREE.Shape();
+  for (let i = 0; i <= N; i++) {
+    const b = (i / N) * Math.PI * 2;
+    const ux = Math.cos(b), uz = Math.sin(b);
+    let rMax = 0;
+    for (const [cx, cz, rx, rz] of ells) {
+      const px = C.x - cx, pz = C.z - cz;
+      const A = (ux / rx) ** 2 + (uz / rz) ** 2;
+      const B = 2 * (px * ux / (rx * rx) + pz * uz / (rz * rz));
+      const Q = (px / rx) ** 2 + (pz / rz) ** 2 - 1;
+      const D = B * B - 4 * A * Q;
+      if (D < 0) continue;
+      const t = (-B + Math.sqrt(D)) / (2 * A);   // 最远交点
+      if (t > rMax) rMax = t;
+    }
+    const x = C.x + rMax * ux, z = C.z + rMax * uz;
+    if (i === 0) s.moveTo(x, -z); else s.lineTo(x, -z);
+  }
+  s.closePath();
+  return s;
+}
+
 function makeShape() {
   const w = P.padW / 2, h = P.padH / 2;
   const s = new THREE.Shape();
+  if (P.shape === 'hug') return makeHugShape();
   if (P.shape === 'ellipse') {
     s.absellipse(0, 0, w, h, 0, Math.PI * 2);
     return s;
@@ -607,11 +657,19 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
 /* --- 外形 --- */
 {
   const el = document.getElementById('shapeCtrls');
-  selectRow(el, '轮廓', [['rect','圆角矩形'],['ellipse','椭圆'],['stadium','胶囊形']],
-    () => P.shape, v => { P.shape = v; rebuild(); });
+  selectRow(el, '轮廓', [['rect','圆角矩形'],['ellipse','椭圆'],['stadium','胶囊形'],['hug','经典']],
+    () => P.shape, v => { P.shape = v; rebuild(); refreshShapeUI(); });
   slider(el, '宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); });
   slider(el, '长度', 150, 340, 1, () => P.padH, v => { P.padH = v; rebuild(); });
   slider(el, '圆角', 0, 110, 1, () => P.corner, v => { P.corner = v; rebuild(); });
+  const hugRows = [
+    slider(el, '顶部弧度', 0.4, 2, 0.01, () => P.topRound, v => { P.topRound = v; rebuild(); }),
+    slider(el, '腕托边距', 0, 40, 1, () => P.wMargin, v => { P.wMargin = v; rebuild(); }),
+  ];
+  window.refreshShapeUI = () => {
+    hugRows.forEach(r => r.closest('.row').style.display = P.shape === 'hug' ? '' : 'none');
+  };
+  refreshShapeUI();
   slider(el, '厚度', 2, 14, 0.5, () => P.thick, v => { P.thick = v; rebuild(); });
   slider(el, '边缘倒角', 0.5, 8, 0.5, () => P.bevel, v => { P.bevel = v; rebuild(); });
   colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; rebuild(); });
