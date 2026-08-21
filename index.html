@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D MousePad Studio</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; overflow:hidden; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
+  #app { display:flex; height:100vh; background:#17181c; }
+
+  /* ---------- 侧栏 ---------- */
+  #panel {
+    width:330px; min-width:330px; height:100%; overflow-y:auto;
+    background:#1e2026; color:#d7d9e0; padding:14px 14px 40px;
+    border-right:1px solid #2c2f38;
+  }
+  #panel::-webkit-scrollbar { width:8px; }
+  #panel::-webkit-scrollbar-thumb { background:#3a3d47; border-radius:4px; }
+  h1 { font-size:17px; font-weight:600; color:#fff; padding:4px 2px 12px; letter-spacing:.5px; }
+  h1 span { color:#ff7eb6; }
+  details { background:#262931; border:1px solid #333743; border-radius:10px; margin-bottom:10px; overflow:hidden; }
+  summary {
+    cursor:pointer; padding:10px 12px; font-size:13px; font-weight:600; color:#e8eaf0;
+    list-style:none; user-select:none; display:flex; align-items:center;
+  }
+  summary::before { content:"▸"; margin-right:8px; font-size:11px; color:#8b8fa0; transition:transform .15s; }
+  details[open] summary::before { transform:rotate(90deg); }
+  .sec-body { padding:4px 12px 12px; }
+
+  .row { display:flex; align-items:center; margin:8px 0; gap:8px; min-width:0; }
+  .row label { flex:0 0 64px; font-size:12px; color:#a6aab8; }
+  .row input[type=range] { flex:1 1 auto; min-width:0; accent-color:#ff7eb6; height:20px; }
+  .row .val { flex:0 0 58px; width:58px; font-size:11px; color:#c9cdda; text-align:right; font-variant-numeric:tabular-nums; }
+  .row input[type=color] { width:42px; height:24px; border:none; border-radius:5px; background:none; cursor:pointer; padding:0; }
+  .row select {
+    flex:1; background:#1a1c22; color:#d7d9e0; border:1px solid #3a3d47; border-radius:6px;
+    padding:5px 8px; font-size:12px; outline:none;
+  }
+  .row input[type=checkbox] { accent-color:#ff7eb6; width:15px; height:15px; }
+
+  /* ---------- 上传区 ---------- */
+  .dropzone {
+    border:1.5px dashed #4a4e5c; border-radius:10px; padding:12px; text-align:center;
+    font-size:12px; color:#8b8fa0; cursor:pointer; transition:.15s; margin-bottom:8px;
+    background:#21242c; position:relative;
+  }
+  .dropzone:hover { border-color:#ff7eb6; color:#ffb9d6; }
+  .dropzone img { max-width:100%; max-height:90px; border-radius:6px; display:block; margin:0 auto; }
+  .dropzone .clear {
+    position:absolute; top:5px; right:7px; width:18px; height:18px; border-radius:50%;
+    background:#000a; color:#fff; font-size:11px; line-height:18px; cursor:pointer;
+  }
+  .dropzone .clear:hover { background:#ff4d6d; }
+  .hint { font-size:11px; color:#6f7382; margin:2px 0 8px; line-height:1.5; }
+
+  /* ---------- 按钮 ---------- */
+  .btn {
+    display:block; width:100%; padding:9px 0; margin:8px 0 0; border:none; border-radius:8px;
+    background:linear-gradient(135deg,#ff7eb6,#ff5e8a); color:#fff; font-size:13px; font-weight:600;
+    cursor:pointer; letter-spacing:1px; transition:filter .15s;
+  }
+  .btn:hover { filter:brightness(1.12); }
+  .btn.ghost { background:#31343e; color:#cfd2dc; font-weight:500; }
+  .btn.ghost:hover { background:#3b3f4b; }
+  .btn-row { display:flex; gap:6px; }
+  .btn-row .btn { margin-top:8px; }
+
+  /* ---------- 视口 ---------- */
+  #stage { flex:1; position:relative; }
+  #view { width:100%; height:100%; display:block; }
+  #stage.checker {
+    background:#202228;
+    background-image:
+      linear-gradient(45deg,#2a2c33 25%,transparent 25%,transparent 75%,#2a2c33 75%),
+      linear-gradient(45deg,#2a2c33 25%,transparent 25%,transparent 75%,#2a2c33 75%);
+    background-size:24px 24px; background-position:0 0,12px 12px;
+  }
+  #toolbar {
+    position:absolute; top:14px; right:16px; display:flex; gap:8px; align-items:center;
+  }
+  /* 分段按钮组：外观连在一起 */
+  .seg {
+    display:inline-flex; border-radius:8px; overflow:hidden;
+    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #3a3d47;
+  }
+  .seg button {
+    background:transparent; border:none; border-right:1px solid #3a3d47; color:#cfd2dc;
+    padding:7px 14px; font-size:12px; cursor:pointer; transition:.15s; border-radius:0;
+  }
+  .seg button:last-child { border-right:none; }
+  .seg button:hover { color:#fff; background:#31343e; }
+  .seg button.active { background:linear-gradient(135deg,#ff7eb6,#ff5e8a); color:#fff; }
+  #toolbar select {
+    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #ff7eb6; color:#ffb9d6;
+    padding:7px 10px; border-radius:8px; font-size:12px; cursor:pointer; outline:none;
+  }
+  #modeHint {
+    position:absolute; bottom:14px; left:50%; transform:translateX(-50%);
+    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #3a3d47; color:#cfd2dc;
+    padding:6px 14px; border-radius:8px; font-size:12px; pointer-events:none; display:none;
+    white-space:nowrap;
+  }
+  #dropHint {
+    position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    background:#0009; color:#ffb9d6; font-size:20px; font-weight:600; pointer-events:none; z-index:5;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <h1>3D MousePad <span>Studio</span></h1>
+
+    <details open>
+      <summary>贴图</summary>
+      <div class="sec-body">
+        <div class="dropzone" id="dz1">点击上传主贴图<br><small>或拖拽图片到画布</small></div>
+        <input type="file" id="file1" accept="image/*" hidden>
+        <div class="dropzone" id="dz2">点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small></div>
+        <input type="file" id="file2" accept="image/*" hidden>
+        <div class="hint">提示：直接把图片文件拖到右侧画布也可上传（自动填入空位）。</div>
+        <div id="tex1Ctrls"></div>
+        <div id="tex2Ctrls"></div>
+      </div>
+    </details>
+
+    <details open>
+      <summary>鼠标垫外形</summary>
+      <div class="sec-body" id="shapeCtrls"></div>
+    </details>
+
+    <details open>
+      <summary>腕托</summary>
+      <div class="sec-body" id="wristCtrls"></div>
+    </details>
+
+    <details>
+      <summary>光照</summary>
+      <div class="sec-body" id="lightCtrls"></div>
+    </details>
+
+    <details open>
+      <summary>背景与导出</summary>
+      <div class="sec-body" id="exportCtrls"></div>
+    </details>
+  </aside>
+
+  <main id="stage">
+    <canvas id="view"></canvas>
+    <div id="toolbar">
+      <div class="seg" id="modeSeg" title="鼠标交互模式">
+        <button data-mode="view" class="active">视角</button>
+        <button data-mode="t1">主贴图</button>
+        <button data-mode="t2">腕托贴图</button>
+      </div>
+      <div class="seg" id="viewSeg">
+        <button data-view="persp">透视</button>
+        <button data-view="top">顶视</button>
+        <button data-view="front">前视</button>
+      </div>
+    </div>
+    <div id="modeHint"></div>
+    <div id="dropHint">松开以上传图片</div>
+  </main>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ================= 参数 ================= */
+const P = {
+  // 外形
+  shape: 'rect',      // rect | ellipse | stadium
+  padW: 230, padH: 265, corner: 48, thick: 5, bevel: 3,
+  edgeColor: '#f4f1ec',
+  // 腕托
+  wristStyle: 'full', // none | full | balls
+  wH: 20,             // 隆起高度
+  wW: 150,            // 宽度（整体式）
+  wD: 82,             // 前后长度
+  wPos: 20,           // 距底边距离
+  wGap: 78,           // 双球间距
+  wBW: 78,            // 单球宽度
+  wMorph: 0.55,       // 整体腕托: 0=椭球 1=肾型
+  wMorphRot: 0,       // 肾形朝向（度），180=凹陷转向另一侧
+  wRot: 0,            // 双球旋转角（两球反向）
+  wEgg: 0,            // 双球鹅蛋度 -0.45..0.45
+  // 材质
+  rough: 0.55,
+  matColor: '#d9d5cf',   // 材质底色（贴图叠加在其上方）
+  matOpacity: 1,         // 底色不透明度
+  // 贴图变换
+  t1: { s: 1, ox: 0, oy: 0, r: 0, wrap: 'cutout', asp: 1 },
+  t2: { s: 1, ox: 0, oy: 0, r: 0, wrap: 'cutout', asp: 1 },
+  // 光照
+  hemi: 0.55, key: 1.8, az: 35, el: 55, lightColor: '#ffffff', env: 0.6,
+  shadow: false,
+  // 背景/导出
+  bg: '#e9e7ec', transparent: false, exportScale: 2,
+};
+
+/* ================= 渲染基础 ================= */
+const canvas = document.getElementById('view');
+const stage  = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.localClippingEnabled = true;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, 1, 1, 6000);
+// 透视视角：相机在水平面上绕 Z 轴逆时针 45°，再抬高
+const PERSP_POS = (() => {
+  const d = 600, a = -Math.PI / 4; // 顺时针 45°，缩小距离
+  return new THREE.Vector3(d * Math.sin(a), 300, d * Math.cos(a));
+})();
+const HOME = { pos: PERSP_POS.clone(), tgt: new THREE.Vector3(0, 0, 0) };
+camera.position.copy(HOME.pos);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.copy(HOME.tgt);
+controls.maxDistance = 1600;
+controls.minDistance = 60;
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0x777788, P.hemi);
+scene.add(hemiLight);
+
+const keyLight = new THREE.DirectionalLight(P.lightColor, P.key);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.left = keyLight.shadow.camera.bottom = -320;
+keyLight.shadow.camera.right = keyLight.shadow.camera.top = 320;
+keyLight.shadow.bias = -0.0004;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xdde4ff, 0.35);
+fillLight.position.set(-300, 200, -250);
+scene.add(fillLight);
+
+const shadowPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(2000, 2000),
+  new THREE.ShadowMaterial({ opacity: 0.28 })
+);
+shadowPlane.rotation.x = -Math.PI / 2;
+shadowPlane.receiveShadow = true;
+scene.add(shadowPlane);
+
+/* ================= 贴图 ================= */
+let tex1 = null, tex2 = null;
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+const texLoader = new THREE.TextureLoader();
+
+function makeTex(url, cb) {
+  texLoader.load(url, t => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    t.anisotropy = maxAniso;
+    cb(t);
+  });
+}
+const WRAP_MODES = {
+  clamp: THREE.ClampToEdgeWrapping,    // 不重复，边缘颜色延伸
+  cutout: THREE.ClampToEdgeWrapping,   // 不重复，超出部分镂空（透出底色）
+  repeat: THREE.RepeatWrapping,
+  mirror: THREE.MirroredRepeatWrapping,
+};
+function applyTexParams(t, p) {
+  if (!t) return;
+  const w = WRAP_MODES[p.wrap] || THREE.ClampToEdgeWrapping;
+  t.wrapS = t.wrapT = w;
+  t.center.set(0.5, 0.5);
+  // 长宽比：asp=1 时按图片原始宽高比等比渲染（不拉伸），其余值在原始比例基础上缩放
+  const a0 = t.image && t.image.height ? t.image.width / t.image.height : 1;
+  const a = a0 * (p.asp || 1);
+  const fx = a >= 1 ? 1 / a : 1;
+  const fy = a >= 1 ? 1 : a;
+  t.repeat.set(p.s * fx, p.s * fy);
+  // 裁切居中：默认从画面中心取样，偏移量在此基础上叠加
+  t.offset.set(p.ox + (1 - p.s * fx) / 2, p.oy + (1 - p.s * fy) / 2);
+  t.rotation = THREE.MathUtils.degToRad(p.r);
+  t.needsUpdate = true;
+}
+function refreshTextures() {
+  applyTexParams(tex1, P.t1);
+  applyTexParams(tex2, P.t2);
+  rebuildWristMat();
+}
+
+/* ================= 几何 ================= */
+let padMesh = null, wristGroup = null;
+const allMats = [];
+
+function regMat(m) { allMats.push(m); m.envMapIntensity = P.env; return m; }
+
+function makeShape() {
+  const w = P.padW / 2, h = P.padH / 2;
+  const s = new THREE.Shape();
+  if (P.shape === 'ellipse') {
+    s.absellipse(0, 0, w, h, 0, Math.PI * 2);
+    return s;
+  }
+  if (P.shape === 'stadium') {
+    const r = Math.min(w, h);
+    s.absarc(0, h - r, r, 0, Math.PI);
+    s.absarc(0, -(h - r), r, Math.PI, Math.PI * 2);
+    s.closePath();
+    return s;
+  }
+  const r = Math.min(P.corner, w, h);
+  s.moveTo(-w + r, -h);
+  s.lineTo(w - r, -h);  s.absarc(w - r, -h + r, r, -Math.PI / 2, 0);
+  s.lineTo(w, h - r);   s.absarc(w - r, h - r, r, 0, Math.PI / 2);
+  s.lineTo(-w + r, h);  s.absarc(-w + r, h - r, r, Math.PI / 2, Math.PI);
+  s.lineTo(-w, -h + r); s.absarc(-w + r, -h + r, r, Math.PI, Math.PI * 1.5);
+  return s;
+}
+
+// 世界坐标平面投影 UV：X/Z 用同一尺度，保证贴图渲染长宽比不随外形参数变化（cover 模式）
+function uvScale() { return Math.max(P.padW, P.padH); }
+function planarUV(geo) {
+  const S = uvScale();
+  const pos = geo.attributes.position;
+  const uv = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    uv[i * 2]     = pos.getX(i) / S + 0.5;
+    uv[i * 2 + 1] = 0.5 - pos.getZ(i) / S;
+  }
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
+
+// 贴图按 alpha 叠加在材质底色上方；cutout 模式下超出 [0,1] 的贴图区域镂空（透出底色）
+function patchMapBlend(mat, modeGetter) {
+  mat.onBeforeCompile = sh => {
+    sh.uniforms.uCutout = { value: modeGetter() === 'cutout' ? 1 : 0 };
+    sh.fragmentShader = ('uniform float uCutout;\n' + sh.fragmentShader).replace(
+      '#include <map_fragment>',
+      `#ifdef USE_MAP
+        vec4 texelColor = texture2D( map, vMapUv );
+        if ( uCutout > 0.5 && ( vMapUv.x < 0.0 || vMapUv.x > 1.0 || vMapUv.y < 0.0 || vMapUv.y > 1.0 ) ) texelColor = vec4( 0.0 );
+        diffuseColor.rgb = mix( diffuseColor.rgb, texelColor.rgb, texelColor.a );
+        diffuseColor.a = mix( diffuseColor.a, 1.0, texelColor.a );
+      #endif`
+    );
+  };
+}
+function blendMat(map, modeGetter, rough) {
+  const m = regMat(new THREE.MeshStandardMaterial({
+    map, roughness: rough,
+    color: new THREE.Color(P.matColor),
+    opacity: P.matOpacity,
+    transparent: P.matOpacity < 0.999,
+  }));
+  patchMapBlend(m, modeGetter);
+  return m;
+}
+let padTopMat = null;
+const baseTopMat  = () => { padTopMat = blendMat(tex1, () => P.t1.wrap, P.rough); return padTopMat; };
+const baseEdgeMat = () => regMat(new THREE.MeshStandardMaterial({ color: new THREE.Color(P.edgeColor), roughness: 0.85 }));
+// 底色/透明度实时更新（无需重建几何）
+function updateMatBase() {
+  [padTopMat, wristMat].forEach(m => {
+    if (!m) return;
+    m.color.set(P.matColor);
+    m.opacity = P.matOpacity;
+    m.transparent = P.matOpacity < 0.999;
+  });
+}
+
+function buildPad() {
+  if (padMesh) {
+    scene.remove(padMesh);
+    padMesh.geometry.dispose();
+    padMesh.material.forEach(m => m.dispose());
+  }
+  const geo = new THREE.ExtrudeGeometry(makeShape(), {
+    depth: P.thick,
+    bevelEnabled: true,
+    bevelThickness: P.bevel,
+    bevelSize: P.bevel * 0.9,
+    bevelSegments: 5,
+    curveSegments: 72,
+  });
+  geo.translate(0, 0, -P.thick / 2);
+  geo.rotateX(-Math.PI / 2);
+  planarUV(geo);
+
+  padMesh = new THREE.Mesh(geo, [baseTopMat(), baseEdgeMat()]);
+  padMesh.castShadow = padMesh.receiveShadow = true;
+  scene.add(padMesh);
+
+  const bottom = -(P.thick / 2 + P.bevel);
+  shadowPlane.position.y = bottom - 0.2;
+  return P.thick / 2 + P.bevel; // 顶面高度
+}
+
+let wristMat = null;
+function rebuildWristMat() {
+  const map = tex2 || tex1;
+  if (wristMat) { wristMat.map = map; wristMat.needsUpdate = true; }
+}
+
+// 椭球 → 肾型 连续变形（k: 0..1，rot: 肾形朝向的旋转角度/度，0=凹陷朝使用者一侧）
+function deformKidney(geo, k, rot) {
+  if (k <= 0) return;
+  const rad = THREE.MathUtils.degToRad(rot || 0);
+  const c = Math.cos(rad), s = Math.sin(rad);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x0 = pos.getX(i), y0 = pos.getY(i), z0 = pos.getZ(i);
+    // 先反旋到标准朝向做变形，再旋回，相当于让凹陷方向绕竖直轴转动
+    const xr =  c * x0 + s * z0;
+    const zr = -s * x0 + c * z0;
+    const front = Math.max(0, zr);
+    const g = Math.exp(-((xr / 0.55) ** 2));  // 中央高斯凹陷
+    let z1 = zr - k * 0.55 * g * front * front;
+    let x1 = xr * (1 + k * 0.12);             // 两瓣微微外扩
+    // 旋回原坐标
+    const x2 = c * x1 - s * z1;
+    const z2 = s * x1 + c * z1;
+    pos.setXYZ(i, x2, y0, z2);
+  }
+  geo.computeVertexNormals();
+}
+
+// 椭球 → 鹅蛋形（e: -0.45..0.45，沿 z 轴一头大一头小）
+function deformEgg(geo, e) {
+  if (Math.abs(e) < 1e-4) return;
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const f = 1 + e * pos.getZ(i);
+    pos.setX(i, pos.getX(i) * f);
+    pos.setY(i, pos.getY(i) * f);
+  }
+  geo.computeVertexNormals();
+}
+
+function buildWrist(topY) {
+  if (wristGroup) {
+    scene.remove(wristGroup);
+    wristGroup.children.forEach(c => c.geometry.dispose());
+  }
+  wristGroup = new THREE.Group();
+  if (P.wristStyle !== 'none') {
+    if (wristMat) wristMat.dispose();
+    // 裁剪掉低于鼠标垫下表面的部分
+    const clip = new THREE.Plane(new THREE.Vector3(0, 1, 0), P.thick / 2 + P.bevel + 0.01);
+    wristMat = blendMat(tex2 || tex1, () => (tex2 ? P.t2 : P.t1).wrap, Math.min(1, P.rough + 0.1));
+    wristMat.clippingPlanes = [clip];
+
+    const ry = P.wH * 1.5;
+    const cy = topY - P.wH * 0.5;
+    const mk = (sx, sz, x, z, rotY = 0) => {
+      const g = new THREE.SphereGeometry(1, 72, 48);
+      const m = new THREE.Mesh(g, wristMat);
+      m.scale.set(sx, ry, sz);
+      m.rotation.y = rotY;
+      m.position.set(x, cy, z);
+      m.castShadow = m.receiveShadow = true;
+      wristGroup.add(m);
+      return m;
+    };
+    const zBase = P.padH / 2 - P.wPos - P.wD / 2;
+    if (P.wristStyle === 'full') {
+      const m = mk(P.wW / 2, P.wD / 2, 0, zBase);
+      deformKidney(m.geometry, P.wMorph, P.wMorphRot);
+    } else {
+      const rot = THREE.MathUtils.degToRad(P.wRot);
+      const l = mk(P.wBW / 2, P.wD / 2, -P.wGap / 2, zBase,  rot);
+      const r = mk(P.wBW / 2, P.wD / 2,  P.wGap / 2, zBase, -rot);
+      deformEgg(l.geometry, P.wEgg);
+      deformEgg(r.geometry, P.wEgg);
+    }
+    // 按世界坐标做平面投影 UV，使贴图与垫面连续且长宽比一致
+    wristGroup.updateMatrixWorld(true);
+    const S = uvScale();
+    const v = new THREE.Vector3();
+    wristGroup.children.forEach(m => {
+      const pos = m.geometry.attributes.position;
+      const uv = new Float32Array(pos.count * 2);
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+        uv[i * 2]     = v.x / S + 0.5;
+        uv[i * 2 + 1] = 0.5 - v.z / S;
+      }
+      m.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    });
+  }
+  scene.add(wristGroup);
+}
+
+function rebuild() {
+  const topY = buildPad();
+  buildWrist(topY);
+}
+
+/* ================= 光照 ================= */
+function updateLights() {
+  hemiLight.intensity = P.hemi;
+  keyLight.intensity = P.key;
+  keyLight.color.set(P.lightColor);
+  const az = THREE.MathUtils.degToRad(P.az), el = THREE.MathUtils.degToRad(P.el);
+  keyLight.position.set(
+    500 * Math.cos(el) * Math.sin(az),
+    500 * Math.sin(el),
+    500 * Math.cos(el) * Math.cos(az)
+  );
+  allMats.forEach(m => m.envMapIntensity = P.env);
+  shadowPlane.visible = P.shadow;
+}
+
+/* ================= 背景 ================= */
+function updateBackground() {
+  if (P.transparent) {
+    scene.background = null;
+    renderer.setClearColor(0x000000, 0);
+    stage.classList.add('checker');
+  } else {
+    scene.background = new THREE.Color(P.bg);
+    stage.classList.remove('checker');
+  }
+}
+
+/* ================= UI 构建 ================= */
+function slider(parent, label, min, max, step, get, set) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+  const val = document.createElement('span'); val.className = 'val'; val.textContent = get();
+  inp.oninput = () => { set(parseFloat(inp.value)); val.textContent = inp.value; };
+  row.append(lb, inp, val); parent.appendChild(row);
+  return inp;
+}
+function colorRow(parent, label, get, set) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const inp = document.createElement('input'); inp.type = 'color'; inp.value = get();
+  inp.oninput = () => set(inp.value);
+  row.append(lb, inp); parent.appendChild(row);
+}
+function selectRow(parent, label, opts, get, set) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const sel = document.createElement('select');
+  opts.forEach(([v, t]) => {
+    const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o);
+  });
+  sel.value = get();
+  sel.onchange = () => set(sel.value);
+  row.append(lb, sel); parent.appendChild(row);
+  return sel;
+}
+function checkRow(parent, label, get, set) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = get();
+  inp.onchange = () => set(inp.checked);
+  row.append(lb, inp); parent.appendChild(row);
+}
+
+/* --- 贴图变换控件 --- */
+const texUI = { t1: [], t2: [] }; // 记录控件以便画布拖拽后同步滑条显示
+function texControls(el, tp, title, key) {
+  const h = document.createElement('div');
+  h.className = 'hint'; h.style.marginTop = '6px'; h.textContent = title;
+  el.appendChild(h);
+  const track = (inp, prop) => {
+    texUI[key].push({ inp, prop, val: inp.parentElement.querySelector('.val') });
+    return inp;
+  };
+  track(selectRow(el, '重复模式', [['clamp','不重复·边缘延伸'],['cutout','不重复·镂空'],['repeat','重复'],['mirror','镜像重复']],
+    () => tp.wrap, v => { tp.wrap = v; refreshTextures(); rebuild(); }), 'wrap');
+  track(slider(el, '缩放', 0.2, 5, 0.01, () => tp.s, v => { tp.s = v; refreshTextures(); }), 's');
+  track(slider(el, '长宽比', 0.25, 4, 0.01, () => tp.asp, v => { tp.asp = v; refreshTextures(); }), 'asp');
+  track(slider(el, '偏移 X', -1, 1, 0.005, () => tp.ox, v => { tp.ox = v; refreshTextures(); }), 'ox');
+  track(slider(el, '偏移 Y', -1, 1, 0.005, () => tp.oy, v => { tp.oy = v; refreshTextures(); }), 'oy');
+  track(slider(el, '旋转°', -180, 180, 1, () => tp.r, v => { tp.r = v; refreshTextures(); }), 'r');
+}
+function syncTexUI(key) {
+  const tp = P[key];
+  texUI[key].forEach(({ inp, prop, val }) => {
+    inp.value = tp[prop];
+    if (val) val.textContent = typeof tp[prop] === 'number' ? +tp[prop].toFixed(3) : tp[prop];
+  });
+}
+texControls(document.getElementById('tex1Ctrls'), P.t1, '— 主贴图变换 —', 't1');
+texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 —', 't2');
+
+/* --- 外形 --- */
+{
+  const el = document.getElementById('shapeCtrls');
+  selectRow(el, '轮廓', [['rect','圆角矩形'],['ellipse','椭圆'],['stadium','胶囊形']],
+    () => P.shape, v => { P.shape = v; rebuild(); });
+  slider(el, '宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); });
+  slider(el, '长度', 150, 340, 1, () => P.padH, v => { P.padH = v; rebuild(); });
+  slider(el, '圆角', 0, 110, 1, () => P.corner, v => { P.corner = v; rebuild(); });
+  slider(el, '厚度', 2, 14, 0.5, () => P.thick, v => { P.thick = v; rebuild(); });
+  slider(el, '边缘倒角', 0.5, 8, 0.5, () => P.bevel, v => { P.bevel = v; rebuild(); });
+  colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; rebuild(); });
+  slider(el, '表面粗糙', 0.05, 1, 0.01, () => P.rough, v => { P.rough = v; rebuild(); });
+  colorRow(el, '材质底色', () => P.matColor, v => { P.matColor = v; updateMatBase(); });
+  slider(el, '不透明度', 0, 1, 0.01, () => P.matOpacity, v => { P.matOpacity = v; updateMatBase(); });
+}
+
+/* --- 腕托 --- */
+{
+  const el = document.getElementById('wristCtrls');
+  selectRow(el, '款式', [['none','无腕托'],['full','整体腕托'],['balls','双球腕托']],
+    () => P.wristStyle, v => { P.wristStyle = v; rebuild(); refreshWristUI(); });
+  const rows = {};
+  rows.h     = slider(el, '隆起高度', 5, 42, 0.5, () => P.wH, v => { P.wH = v; rebuild(); });
+  rows.w     = slider(el, '腕托宽度', 60, 260, 1, () => P.wW, v => { P.wW = v; rebuild(); });
+  rows.morph = slider(el, '肾形程度', 0, 1.5, 0.01, () => P.wMorph, v => { P.wMorph = v; rebuild(); });
+  rows.morphRot = slider(el, '肾形朝向°', -180, 180, 1, () => P.wMorphRot, v => { P.wMorphRot = v; rebuild(); });
+  rows.bw    = slider(el, '单球宽度', 40, 150, 1, () => P.wBW, v => { P.wBW = v; rebuild(); });
+  rows.rot   = slider(el, '双球旋转°', -60, 60, 1, () => P.wRot, v => { P.wRot = v; rebuild(); });
+  rows.egg   = slider(el, '鹅蛋度', -0.45, 0.45, 0.01, () => P.wEgg, v => { P.wEgg = v; rebuild(); });
+  rows.d     = slider(el, '前后长度', 40, 160, 1, () => P.wD, v => { P.wD = v; rebuild(); });
+  rows.gap   = slider(el, '双球间距', 20, 200, 1, () => P.wGap, v => { P.wGap = v; rebuild(); });
+  rows.pos   = slider(el, '距底边', 0, 120, 1, () => P.wPos, v => { P.wPos = v; rebuild(); });
+  window.refreshWristUI = () => {
+    const full = P.wristStyle === 'full', balls = P.wristStyle === 'balls';
+    rows.w.closest('.row').style.display     = full ? '' : 'none';
+    rows.morph.closest('.row').style.display = full ? '' : 'none';
+    rows.morphRot.closest('.row').style.display = full ? '' : 'none';
+    rows.bw.closest('.row').style.display    = balls ? '' : 'none';
+    rows.rot.closest('.row').style.display   = balls ? '' : 'none';
+    rows.egg.closest('.row').style.display   = balls ? '' : 'none';
+    rows.gap.closest('.row').style.display   = balls ? '' : 'none';
+    [rows.h, rows.d, rows.pos].forEach(r => r.closest('.row').style.display = P.wristStyle === 'none' ? 'none' : '');
+  };
+  refreshWristUI();
+}
+
+/* --- 光照 --- */
+{
+  const el = document.getElementById('lightCtrls');
+  slider(el, '环境光', 0, 2, 0.01, () => P.hemi, v => { P.hemi = v; updateLights(); });
+  slider(el, '主光强度', 0, 5, 0.01, () => P.key, v => { P.key = v; updateLights(); });
+  slider(el, '主光方位', -180, 180, 1, () => P.az, v => { P.az = v; updateLights(); });
+  slider(el, '主光高度', 5, 90, 1, () => P.el, v => { P.el = v; updateLights(); });
+  colorRow(el, '灯光颜色', () => P.lightColor, v => { P.lightColor = v; updateLights(); });
+  slider(el, '环境反射', 0, 2, 0.01, () => P.env, v => { P.env = v; updateLights(); });
+  checkRow(el, '地面阴影', () => P.shadow, v => { P.shadow = v; updateLights(); });
+}
+
+/* --- 导出 --- */
+{
+  const el = document.getElementById('exportCtrls');
+  checkRow(el, '透明背景', () => P.transparent, v => { P.transparent = v; updateBackground(); });
+  colorRow(el, '背景颜色', () => P.bg, v => { P.bg = v; updateBackground(); });
+  selectRow(el, '导出倍率', [['1','1x'],['2','2x'],['3','3x']], () => String(P.exportScale), v => P.exportScale = +v);
+  const btn = document.createElement('button');
+  btn.className = 'btn'; btn.textContent = '导出 PNG 渲染图';
+  btn.onclick = exportPNG;
+  el.appendChild(btn);
+}
+
+/* ================= 上传 ================= */
+function bindDropzone(dzId, fileId, onImg) {
+  const dz = document.getElementById(dzId), fi = document.getElementById(fileId);
+  dz.onclick = e => { if (!e.target.classList.contains('clear')) fi.click(); };
+  fi.onchange = () => { if (fi.files[0]) loadImage(fi.files[0], onImg, dz); fi.value = ''; };
+}
+function loadImage(file, onImg, dz) {
+  const rd = new FileReader();
+  rd.onload = () => onImg(rd.result, dz);
+  rd.readAsDataURL(file);
+}
+function setDZPreview(dz, url, onClear) {
+  dz.innerHTML = '';
+  const img = document.createElement('img'); img.src = url;
+  const c = document.createElement('span'); c.className = 'clear'; c.textContent = '×';
+  c.onclick = e => { e.stopPropagation(); onClear(); };
+  dz.append(img, c);
+}
+bindDropzone('dz1', 'file1', (url, dz) => {
+  makeTex(url, t => {
+    tex1 = t; refreshTextures(); rebuild();
+    setDZPreview(dz, url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { tex1 = null; rebuild(); }));
+  });
+});
+bindDropzone('dz2', 'file2', (url, dz) => {
+  makeTex(url, t => {
+    tex2 = t; refreshTextures(); rebuild();
+    setDZPreview(dz, url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { tex2 = null; refreshTextures(); rebuild(); }));
+  });
+});
+function resetDZ(id, html, clearFn) {
+  document.getElementById(id).innerHTML = html;
+  clearFn();
+}
+
+/* ================= 画布交互模式（视角 / 贴图编辑） ================= */
+const modeSeg = document.getElementById('modeSeg');
+const modeHint = document.getElementById('modeHint');
+let dragMode = 'view';
+
+function setDragMode(m) {
+  dragMode = m;
+  controls.enabled = (m === 'view');
+  canvas.style.cursor = m === 'view' ? '' : 'move';
+  modeSeg.querySelectorAll('button').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === m));
+  if (m === 'view') {
+    modeHint.style.display = 'none';
+  } else {
+    modeHint.textContent = `正在编辑${m === 't1' ? '主贴图' : '腕托贴图'}：拖拽=移动  滚轮=缩放  Shift+滚轮=旋转`;
+    modeHint.style.display = 'block';
+  }
+}
+modeSeg.querySelectorAll('button').forEach(b =>
+  b.onclick = () => setDragMode(b.dataset.mode));
+
+let panning = false, lastPX = 0, lastPY = 0;
+canvas.addEventListener('pointerdown', e => {
+  if (dragMode === 'view' || e.button !== 0) return;
+  panning = true; lastPX = e.clientX; lastPY = e.clientY;
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener('pointermove', e => {
+  if (!panning || dragMode === 'view') return;
+  const tp = P[dragMode];
+  const k = 1.5 / stage.clientHeight;   // 像素 → uv 偏移量
+  tp.ox = THREE.MathUtils.clamp(tp.ox - (e.clientX - lastPX) * k, -1, 1);
+  tp.oy = THREE.MathUtils.clamp(tp.oy + (e.clientY - lastPY) * k, -1, 1);
+  lastPX = e.clientX; lastPY = e.clientY;
+  refreshTextures(); syncTexUI(dragMode);
+});
+const endPan = () => panning = false;
+canvas.addEventListener('pointerup', endPan);
+canvas.addEventListener('pointercancel', endPan);
+// 鼠标位置 → 垫面 UV（投射到顶面平面）
+const raycaster = new THREE.Raycaster();
+function uvAtPoint(e) {
+  const r = canvas.getBoundingClientRect();
+  const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+  const ny = -((e.clientY - r.top) / r.height) * 2 + 1;
+  raycaster.setFromCamera(new THREE.Vector2(nx, ny), camera);
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -(P.thick / 2 + P.bevel));
+  const pt = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plane, pt)) return null;
+  const S = uvScale();
+  return { u: pt.x / S + 0.5, v: 0.5 - pt.z / S };
+}
+// 以鼠标所在位置为锚点缩放贴图（锚点下的贴图像素保持不动）
+function zoomTexAt(tp, t, e) {
+  const ns = THREE.MathUtils.clamp(tp.s * Math.exp(-e.deltaY * 0.001), 0.2, 5);
+  const m = uvAtPoint(e);
+  if (!m || !t || !t.image) { tp.s = ns; return; }
+  const a0 = t.image.height ? t.image.width / t.image.height : 1;
+  const a = a0 * (tp.asp || 1);
+  const fx = a >= 1 ? 1 / a : 1, fy = a >= 1 ? 1 : a;
+  const rad = THREE.MathUtils.degToRad(tp.r);
+  const c = Math.cos(rad), s = Math.sin(rad);
+  // 贴图坐标 = R·S·(uv-0.5) + 0.5 + offset（与 three.js uvTransform 一致）
+  const texelAt = (sc, ox, oy) => {
+    const rx = sc * fx, ry = sc * fy;
+    const du = (m.u - 0.5) * rx, dv = (m.v - 0.5) * ry;
+    return {
+      u: c * du + s * dv + 0.5 + ox + (1 - rx) / 2,
+      v: -s * du + c * dv + 0.5 + oy + (1 - ry) / 2,
+    };
+  };
+  const p = texelAt(tp.s, tp.ox, tp.oy);   // 当前锚点处的贴图坐标
+  const rx2 = ns * fx, ry2 = ns * fy;
+  const du2 = (m.u - 0.5) * rx2, dv2 = (m.v - 0.5) * ry2;
+  // 反解新偏移，使缩放后锚点处贴图坐标不变
+  const offU = p.u - (c * du2 + s * dv2 + 0.5);
+  const offV = p.v - (-s * du2 + c * dv2 + 0.5);
+  tp.s = ns;
+  tp.ox = THREE.MathUtils.clamp(offU - (1 - rx2) / 2, -1, 1);
+  tp.oy = THREE.MathUtils.clamp(offV - (1 - ry2) / 2, -1, 1);
+}
+canvas.addEventListener('wheel', e => {
+  if (dragMode === 'view') return;
+  e.preventDefault();
+  const tp = P[dragMode];
+  if (e.shiftKey) {
+    tp.r = THREE.MathUtils.clamp(tp.r - e.deltaY * 0.1, -180, 180);
+  } else {
+    zoomTexAt(tp, dragMode === 't1' ? tex1 : tex2, e);
+  }
+  refreshTextures(); syncTexUI(dragMode);
+}, { passive: false });
+
+/* 拖拽到画布 */
+const dropHint = document.getElementById('dropHint');
+stage.addEventListener('dragover', e => { e.preventDefault(); dropHint.style.display = 'flex'; });
+stage.addEventListener('dragleave', () => dropHint.style.display = 'none');
+stage.addEventListener('drop', e => {
+  e.preventDefault(); dropHint.style.display = 'none';
+  const file = e.dataTransfer.files[0];
+  if (!file || !file.type.startsWith('image/')) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    const url = rd.result;
+    if (!tex1) {
+      makeTex(url, t => { tex1 = t; refreshTextures(); rebuild();
+        setDZPreview(document.getElementById('dz1'), url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { tex1 = null; rebuild(); })); });
+    } else {
+      makeTex(url, t => { tex2 = t; refreshTextures(); rebuild();
+        setDZPreview(document.getElementById('dz2'), url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { tex2 = null; refreshTextures(); rebuild(); })); });
+    }
+  };
+  rd.readAsDataURL(file);
+});
+
+/* ================= 视角 ================= */
+const D = 480;
+const VIEWS = {
+  persp: [PERSP_POS.clone(), new THREE.Vector3(0, 0, 0)],
+  top:   [new THREE.Vector3(0, D * 1.25, 0.01), new THREE.Vector3(0, 0, 0)],
+  front: [new THREE.Vector3(0, 110, D), new THREE.Vector3(0, 0, 0)],
+};
+const viewSeg = document.getElementById('viewSeg');
+viewSeg.querySelectorAll('button').forEach(b => {
+  b.onclick = () => {
+    const [p, t] = VIEWS[b.dataset.view];
+    camera.position.copy(p); controls.target.copy(t);
+  };
+});
+
+/* ================= 导出 ================= */
+function exportPNG() {
+  const scale = P.exportScale;
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w * scale, h * scale, false);
+  renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL('image/png');
+  renderer.setSize(w, h, false);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const a = document.createElement('a');
+  a.href = url; a.download = 'mousepad-3d.png'; a.click();
+}
+
+/* ================= 主循环 ================= */
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+
+rebuild();
+updateLights();
+updateBackground();
+resize();
+
+(function loop() {
+  requestAnimationFrame(loop);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>
