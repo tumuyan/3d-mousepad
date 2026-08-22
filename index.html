@@ -203,14 +203,29 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 const norm2 = (x, y) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
 
 /* ================= 参数 ================= */
+// 默认经典轮廓锚点（按 3d MousePad Template），用于首次加载与“重置锚点”。
+// 运行时坐标采用顶层 {x,y,h1,h2}（与 bakeClassicCtrl / makeClassicShape 约定一致）。
+// 共 7 个锚点：首尾为 pin（接缝，手柄由 ensureClassicCtrl 重算），中间 5 个可拖拽。
+const DEFAULT_CLASSIC_CTRL = [
+  { x: -77.87016515677138, y: -116.87196203842663, h1: { x: -77.87016515677138, y: -116.87196203842663 }, h2: { x: -81.75976991430169, y: -101.1194309458591 } },
+  { x: -72.39671119796571, y: -66.03870827899848, h1: { x: -73.41438595928038, y: -78.25380858100641 }, h2: { x: -70.87398786041214, y: -47.76153465979944 } },
+  { x: -103.02017794430475, y: -3.591958181479075, h1: { x: -91.22373904493193, y: -27.961251618686443 }, h2: { x: -112.8317730574489, y: 16.67700963490084 } },
+  { x: -93.14914645679774, y: 50.287355985997074, h1: { x: -98.81515685043313, y: 43.43436161334235 }, h2: { x: -63.7719811054472, y: 85.8188031332696 } },
+  { x: 0.5478745968429263, y: 96.93694595772325, h1: { x: -34.775768031004915, y: 96.15593587902342 }, h2: { x: 29.71789177917693, y: 97.58189862172993 } },
+  { x: 91.81815115714443, y: 46.6804878923647, h1: { x: 70.12431390266855, y: 79.49146313593883 }, h2: { x: 110.86396431535806, y: 17.874532694237914 } },
+  { x: 99.68920152549207, y: -32.5305450234862, h1: { x: 99.68920152549207, y: -32.5305450234862 }, h2: { x: 93.8222688203322, y: -56.27944749493295 } },
+  { x: 82.84846493178915, y: -85.45820524939745, h1: { x: 87.09875240404779, y: -61.367411896576435 }, h2: { x: 81.13539464219684, y: -95.16795373459694 } },
+  { x: 77.87016515677138, y: -116.87196203842663, h1: { x: 81.1672277264742, y: -105.1974693635984 }, h2: { x: 77.87016515677138, y: -116.87196203842663 } },
+];
 const P = {
   // 外形
   shape: 'classic',   // rect | ellipse | stadium | classic
+  cfgName: '',        // 配置名称，用于导出文件名（留空则用默认名）
   padW: 230, padH: 265, corner: 48, thick: 5, bevel: 3,
   edgeColor: '#f4f1ec',
   edgeSame: true,   // true=边缘与上表面作为整体着色（共享本色+贴图）
   // 腕托
-  wristStyle: 'full', // none | full | balls
+  wristStyle: 'balls', // none | full | balls
   wH: 27,             // 隆起高度
   wW: 150,            // 宽度（整体式）
   wD: 89,             // 前后长度
@@ -223,11 +238,11 @@ const P = {
   wEgg: 0.1,            // 双球鹅蛋度 -0.45..0.45
   wJoin: 16,           // 双球过渡弧宽度（0=保留原始相交尖角）
   wMargin: 2,         // 经典款：外形超出腕托的距离（overhang）
-  wristTopGap: 150,   // 经典款：腕托顶 → 轮廓顶的距离（决定垫身总长）
+  wristTopGap: 215,   // 经典款：腕托顶 → 轮廓顶的距离（决定垫身总长）
   // 经典款上半轮廓：一串三次贝塞尔锚点（含切线手柄），由腕托足迹自动烘焙后可手动拖拽。
   // null 表示尚未烘焙，首次生成时按 wristTopGap 自动生成。
   // 结构：[{ x, y, h1:{x,y}, h2:{x,y}, pin?:true }]，pin 点为足迹接缝，位置由腕托决定
-  classicCtrl: null,
+  classicCtrl: structuredClone(DEFAULT_CLASSIC_CTRL),
   // 材质
   rough: 0.55,
   matColor: '#b6e3a8',   // 材质底色（贴图叠加在其上方）
@@ -412,8 +427,11 @@ function ensureClassicCtrl(pBL, pBR, dBLv, dBRv, topY) {
   let c = P.classicCtrl;
   const stale = !Array.isArray(c) || c.length < 3
     || !c[0] || !c[c.length - 1]
-    || c.some(p => !p || !p.h1 || !p.h2
-        || !Number.isFinite(p.x) || !Number.isFinite(p.y));
+    || c.some(p => !p
+        || !Number.isFinite(p.x) || !Number.isFinite(p.y)
+        || ((p.h1 || p.h2) && (!p.h1 || !p.h2
+            || !Number.isFinite(p.h1.x) || !Number.isFinite(p.h1.y)
+            || !Number.isFinite(p.h2.x) || !Number.isFinite(p.h2.y))));
   if (stale) {
     P.classicCtrl = bakeClassicCtrl(pBL, pBR, dBLv, dBRv, topY);
     return P.classicCtrl;
@@ -430,6 +448,19 @@ function ensureClassicCtrl(pBL, pBR, dBLv, dBRv, topY) {
   moveEnd(first, pBL, dBLv, c[1], true);
   moveEnd(last, pBR, dBRv, c[c.length - 2], false);
   first.pin = last.pin = true;
+  // 中间“接缝”类锚点（设计稿可能只存 p、无 h1/h2）补一对平滑共线手柄，
+  // 避免 makeClassicShape() 的贝塞尔链读到 undefined 手柄。
+  for (let i = 1; i < c.length - 1; i++) {
+    const p = c[i];
+    if (p.h1 && p.h2) continue;
+    const a = c[i - 1] || p, b = c[i + 1] || p;
+    const tx = (b.x - a.x) * 0.5, ty = (b.y - a.y) * 0.5;
+    const L = Math.hypot(tx, ty) || 1;
+    const k1 = Math.min(Math.hypot(p.x - a.x, p.y - a.y) * 0.42, L) / L;
+    const k2 = Math.min(Math.hypot(b.x - p.x, b.y - p.y) * 0.42, L) / L;
+    p.h1 = { x: p.x - tx * k1, y: p.y - ty * k1 };
+    p.h2 = { x: p.x + tx * k2, y: p.y + ty * k2 };
+  }
   return c;
 }
 
@@ -984,6 +1015,7 @@ function colorRow(parent, label, get, set) {
   inp.oninput = () => set(inp.value);
   uiSyncers.push(() => { inp.value = get(); });
   row.append(lb, inp); parent.appendChild(row);
+  return row;
 }
 function selectRow(parent, label, opts, get, set) {
   const row = document.createElement('div'); row.className = 'row';
@@ -1005,7 +1037,7 @@ function checkRow(parent, label, get, set) {
   inp.onchange = () => set(inp.checked);
   uiSyncers.push(() => { inp.checked = get(); });
   row.append(lb, inp); parent.appendChild(row);
-  return inp;
+  return row;
 }
 function btnRow(parent, label, text, onClick) {
   const row = document.createElement('div'); row.className = 'row';
@@ -1060,10 +1092,18 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   // 拖动这两个滑条只平移两端 pin 锚点，用户拖出的形状不会被重置。
   const classicRows = [
     slider(el, '腕托顶距', 40, 240, 1, () => P.wristTopGap, v => { P.wristTopGap = v; rebuild(); if (curveEdit) setEditOrtho(); }),
-    checkRow(el, '编辑轮廓（拖拽贝塞尔控制点）', () => curveEdit, v => setCurveEdit(v)),
+    checkRow(el, '编辑轮廓', () => curveEdit, v => setCurveEdit(v)),
     slider(el, '外形超出腕托', 0, 10, 0.01, () => P.wMargin, v => { P.wMargin = v; rebuild(); if (curveEdit) setEditOrtho(); }),
-    btnRow(el, '轮廓锚点', '重置为默认形状', () => { P.classicCtrl = null; rebuild(); drawCurveOverlay(); }),
   ];
+  // 在“编辑轮廓”行右侧放“重置锚点”按钮
+  {
+    const editRow = classicRows[1];
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = '重置锚点';
+    resetBtn.style.cssText = 'margin-left:8px;padding:3px 10px;border:0;border-radius:5px;background:#3a4150;color:#e6e9ef;cursor:pointer;font-size:12px';
+    resetBtn.onclick = () => { P.classicCtrl = structuredClone(DEFAULT_CLASSIC_CTRL); refreshShapeUI(); rebuild(); if (curveEdit) drawCurveOverlay(); };
+    editRow.appendChild(resetBtn);
+  }
   window.refreshShapeUI = () => {
     const isClassic = P.shape === 'classic';
     classicRows.forEach(r => r.closest('.row').style.display = isClassic ? '' : 'none');
@@ -1073,9 +1113,10 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   refreshShapeUI();
   slider(el, '厚度', 2, 14, 0.5, () => P.thick, v => { P.thick = v; rebuild(); });
   slider(el, '边缘倒角', 0.5, 8, 0.5, () => P.bevel, v => { P.bevel = v; rebuild(); });
-  checkRow(el, '边缘同色（整体着色含贴图）', () => P.edgeSame, v => { P.edgeSame = v; if (edgeColorRow) edgeColorRow.style.display = v ? 'none' : ''; rebuild(); });
+  checkRow(el, '边缘随正面整体着色', () => P.edgeSame, v => { P.edgeSame = v; if (edgeColorRow) edgeColorRow.style.display = v ? 'none' : ''; rebuild(); });
   const edgeColorRow = colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; rebuild(); });
   if (P.edgeSame && edgeColorRow) edgeColorRow.style.display = 'none';
+  uiSyncers.push(() => { if (edgeColorRow) edgeColorRow.style.display = P.edgeSame ? 'none' : ''; });
   slider(el, '表面粗糙', 0.05, 1, 0.01, () => P.rough, v => { P.rough = v; rebuild(); });
   colorRow(el, '材质底色', () => P.matColor, v => { P.matColor = v; updateMatBase(); });
   slider(el, '本色不透明度', 0, 1, 0.01, () => P.matOpacity, v => { P.matOpacity = v; updateMatBase(); });
@@ -1132,14 +1173,24 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   checkRow(el, '透明背景', () => P.transparent, v => { P.transparent = v; updateBackground(); });
   colorRow(el, '背景颜色', () => P.bg, v => { P.bg = v; updateBackground(); });
   selectRow(el, '导出倍率', [['1','1x'],['2','2x'],['3','3x']], () => String(P.exportScale), v => P.exportScale = +v);
+  // 配置名称：用于导出文件名
+  {
+    const row = document.createElement('div'); row.className = 'row';
+    const lb = document.createElement('label'); lb.textContent = '配置名称';
+    const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = '留空则用默认文件名'; inp.value = P.cfgName || '';
+    inp.style.flex = '1'; inp.style.minWidth = '0';
+    inp.oninput = () => { P.cfgName = inp.value; };
+    uiSyncers.push(() => { inp.value = P.cfgName || ''; });
+    row.append(lb, inp); el.appendChild(row);
+  }
   const btn = document.createElement('button');
   btn.className = 'btn'; btn.textContent = '导出 PNG 渲染图';
   btn.onclick = exportPNG;
   el.appendChild(btn);
   // 配置导入 / 导出
   const mkBtn = (text, fn) => { const b = document.createElement('button'); b.className = 'btn'; b.textContent = text; b.style.marginTop = '6px'; b.onclick = fn; el.appendChild(b); return b; };
-  mkBtn('导出配置 (JSON，不含贴图)', exportConfigJSON);
-  mkBtn('导出配置 + 贴图 (ZIP)', exportConfigZip);
+  mkBtn('导出配置 (JSON)', exportConfigJSON);
+  mkBtn('导出配置 (ZIP，含贴图)', exportConfigZip);
   const imp = document.createElement('input');
   imp.type = 'file'; imp.accept = '.json,.zip,application/json,application/zip'; imp.style.display = 'none';
   imp.onchange = () => {
@@ -1894,9 +1945,16 @@ function downloadBlob(blob, filename) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+// 由配置名称生成安全文件名：去除路径分隔符等非法字符，空格转下划线；留空回退默认名
+function safeFileName(name, fallback) {
+  const s = (name || '').trim();
+  if (!s) return fallback;
+  const cleaned = s.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_').replace(/^\.+|\.+$/g, '').slice(0, 80);
+  return cleaned || fallback;
+}
 function exportConfigJSON() {
   const blob = new Blob([JSON.stringify(serializeConfig(false), null, 2)], { type: 'application/json' });
-  downloadBlob(blob, 'mousepad-config.json');
+  downloadBlob(blob, safeFileName(P.cfgName, 'mousepad-config') + '.json');
 }
 function exportConfigZip() {
   const cfg = serializeConfig(true);
@@ -1908,7 +1966,7 @@ function exportConfigZip() {
     files.push({ name: `${t.name}.${ext}`, bytes: bin });
   });
   const blob = makeZip(files);
-  downloadBlob(blob, 'mousepad-config.zip');
+  downloadBlob(blob, safeFileName(P.cfgName, 'mousepad-config') + '.zip');
 }
 async function importConfigFile(file) {
   const buf = new Uint8Array(await file.arrayBuffer());
@@ -1935,9 +1993,20 @@ async function importConfigFile(file) {
   }
   if (!cfg || cfg.type !== '3dm-config' || !cfg.params) throw new Error('文件格式不正确');
   Object.assign(P, cfg.params);
-  P.classicCtrl = cfg.params.classicCtrl || null;
+  // 兼容旧版配置：经典轮廓锚点曾以 {p:{x,y}, h1, h2} 嵌套结构存储，
+  // 运行时约定为顶层 {x,y,h1,h2}，导入时统一提升，避免被判为无效而退回程序化默认。
+  let cc = cfg.params.classicCtrl;
+  if (Array.isArray(cc) && cc.length && cc[0] && cc[0].p && !('x' in cc[0])) {
+    cc = cc.map(pt => ({
+      x: pt.p.x, y: pt.p.y,
+      h1: pt.h1 ? { x: pt.h1.x, y: pt.h1.y } : undefined,
+      h2: pt.h2 ? { x: pt.h2.x, y: pt.h2.y } : undefined,
+    }));
+  }
+  P.classicCtrl = cc || null;
   rebuild();
   refreshShapeUI();
+  if (window.refreshWristUI) window.refreshWristUI();
   uiSyncers.forEach(f => f());
   syncTexUI('t1'); syncTexUI('t2');
   alert('配置已导入');
