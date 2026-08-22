@@ -196,8 +196,14 @@ const P = {
   wMorphRot: 0,       // 肾形朝向（度），180=凹陷转向另一侧
   wRot: 0,            // 双球旋转角（两球反向）
   wEgg: 0,            // 双球鹅蛋度 -0.45..0.45
-  wMargin: 12,        // 等身款：腕托边距
+  wMargin: 28,        // 经典款：外形超出腕托的距离（overhang）
   topRound: 0.78,     // 经典款：顶部弧度（纵向半径/宽度半径）
+  topAsym: 0.15,      // 经典款：顶部左右不对称度（>0 左上饱满）
+  waistLDepth: 0.95,  // 经典款：左腰内凹深度
+  waistLPos: 0.48,    // 经典款：左腰高度位置（0=腕托顶 1=左肩）
+  waistRDepth: 0.80,  // 经典款：右腰内凹深度
+  waistRPos: 0.25,    // 经典款：右腰高度位置（0=腕托顶 1=右肩）
+  waistRound: 0.65,   // 经典款：腰窝弧线圆润度（0=偏尖，1=饱满连续弧线）
   // 材质
   rough: 0.55,
   matColor: '#d9d5cf',   // 材质底色（贴图叠加在其上方）
@@ -289,13 +295,11 @@ function applyTexParams(t, p) {
   const w = WRAP_MODES[p.wrap] || THREE.ClampToEdgeWrapping;
   t.wrapS = t.wrapT = w;
   t.center.set(0.5, 0.5);
-  // 长宽比：asp=1 时按图片原始宽高比等比渲染（不拉伸），其余值在原始比例基础上缩放
   const a0 = t.image && t.image.height ? t.image.width / t.image.height : 1;
   const a = a0 * (p.asp || 1);
   const fx = a >= 1 ? 1 / a : 1;
   const fy = a >= 1 ? 1 : a;
   t.repeat.set(p.s * fx, p.s * fy);
-  // 裁切居中：默认从画面中心取样，偏移量在此基础上叠加
   t.offset.set(p.ox + (1 - p.s * fx) / 2, p.oy + (1 - p.s * fy) / 2);
   t.rotation = THREE.MathUtils.degToRad(p.r);
   t.needsUpdate = true;
@@ -312,49 +316,219 @@ const allMats = [];
 
 function regMat(m) { allMats.push(m); m.envMapIntensity = P.env; return m; }
 
-// 经典款：轮廓 = 顶部椭圆 ∪ 腕托外扩椭圆（双球为两个）的并集
-// 以腕托中心为极点做射线采样，取所有椭圆的最远交点，自然形成收腰与双球凹口
+function padTopOff(asym) {
+  // 顶部最高点随左右不对称度偏移：asym>0 时左肩更宽，顶点略偏左
+  return (P.padW / 2) * asym * 0.42;
+}
+
+// 经典款：轮廓 = 贴合腕托的等距底部曲线 + 左右非对称腰线 + 饱满顶部
+// 底部严格沿腕托的肾形/双球变形几何外扩 wMargin，上部用贝塞尔曲线平滑连接
 function makeHugShape() {
   const M = P.wMargin;
-  const topZ = -P.padH / 2;
   const zBase = P.padH / 2 - P.wPos - P.wD / 2;
-  const rzb = P.wD / 2 + M;
-  const ells = []; // [cx, cz, rx, rz]
-  const rxD = P.padW / 2;
-  const rzD = Math.max(10, P.topRound * rxD);
-  ells.push([0, topZ + rzD, rxD, rzD]);                       // 顶部椭圆
-  if (P.wristStyle === 'balls') {
-    const rxb = P.wBW / 2 + M;
-    if (P.wGap / 2 < rxb) {                                   // 两球相交：各自成圆
-      ells.push([-P.wGap / 2, zBase, rxb, rzb]);
-      ells.push([ P.wGap / 2, zBase, rxb, rzb]);
-    } else {                                                  // 分离太远：合并为单个扁椭圆
-      ells.push([0, zBase, P.wGap / 2 + rxb, rzb]);
+
+  const bottomPts = [];
+  const BSTEPS = 80;
+  let rawEdgeL = null; // 未加 overhang 的腕托原始侧缘 x（用于腰线基准）
+  let rawEdgeR = null;
+
+  // 采样某一腕托轮廓在前半圆(z>=0)上的“原始足迹”（未经 overhang 偏移），
+  // 与 3D 碗托几何体保持同一套单位球变形/旋转/缩放，返回 [{x, z}]
+  // opts 在 kind==='ball' 时传 {rot: 弧度, ox: 球心 x 偏移}
+  function wristFootprint(kind, opts = {}) {
+    const raw = [];
+    if (kind === 'full') {
+      const rx = P.wW / 2, ry = P.wD / 2, k = P.wMorph;
+      const rad = THREE.MathUtils.degToRad(P.wMorphRot || 0);
+      const c = Math.cos(rad), s = Math.sin(rad);
+      for (let i = 0; i <= BSTEPS; i++) {
+        const t = (i / BSTEPS) * Math.PI;          // 0..π，右→左沿前半圆
+        const x0u = Math.cos(t), z0u = Math.sin(t);
+        const xru = c * x0u + s * z0u, zru = -s * x0u + c * z0u;
+        let x1u = xru, z1u = zru;
+        if (k > 0) {
+          const g = Math.exp(-((xru / 0.55) ** 2));
+          const front = Math.max(0, zru);
+          z1u = zru - k * 0.55 * g * front * front;
+          x1u = xru * (1 + k * 0.12);
+        }
+        raw.push({
+          x: (c * x1u - s * z1u) * rx,
+          z: (s * x1u + c * z1u) * ry,
+        });
+      }
+    } else if (kind === 'ball') {
+      // 单个双球：单位球 → 鹅蛋变形 → 绕 y 旋 wRot → 缩放 → 平移
+      const sx = P.wBW / 2, sz = P.wD / 2, e = P.wEgg;
+      const rad = opts.rot || 0;
+      const c = Math.cos(rad), s = Math.sin(rad);
+      const ox = opts.ox || 0;
+      for (let i = 0; i <= BSTEPS; i++) {
+        const t = (i / BSTEPS) * Math.PI;          // 0..π，右→左沿前半圆
+        let xu = Math.cos(t), zu = Math.sin(t);
+        if (e) xu *= (1 + e * zu);                 // 鹅蛋：x 随 z 缩放
+        const xr = c * xu + s * zu, zr = -s * xu + c * zu;
+        raw.push({ x: ox + xr * sx, z: zr * sz });
+      }
+    } else { // none：与鼠标垫自身椭圆底边一致的足迹
+      const rx = P.padW / 2, ry = P.padW * 0.25, cz = P.padH / 2 - ry;
+      for (let i = 0; i <= BSTEPS; i++) {
+        const t = (i / BSTEPS) * Math.PI;
+        // 抵消 offsetFootprint 的 zBase，使最终 y = -(cz + sin·ry)
+        raw.push({ x: Math.cos(t) * rx, z: (cz + Math.sin(t) * ry) - zBase });
+      }
     }
-  } else if (P.wristStyle === 'full') {
-    ells.push([0, zBase, P.wW / 2 + M, rzb]);
+    return raw;
   }
-  // 极点：保证落在并集内部（无腕托时取顶部椭圆中心）
-  const C = { x: 0, z: P.wristStyle === 'none' ? topZ + rzD : zBase };
-  const N = 256;
+
+  // 把“原始足迹”沿曲线法向向外偏移 M，写入 bottomPts
+  // raw 必须按 右→左 顺序排列（bottomPts[0] 为右下，末尾为左下）
+  function offsetFootprint(raw, pushEdges) {
+    for (let i = 0; i < raw.length; i++) {
+      const p = raw[i];
+      const prev = raw[Math.max(0, i - 1)];
+      const next = raw[Math.min(raw.length - 1, i + 1)];
+      const dx = next.x - prev.x;
+      const dz = next.z - prev.z;
+      const len = Math.hypot(dx, dz) || 1;
+      let nx = dz / len, nz = -dx / len;
+      const rlen = Math.hypot(p.x, p.z) || 1;
+      if (nx * (p.x / rlen) + nz * (p.z / rlen) < 0) { nx = -nx; nz = -nz; }
+      bottomPts.push({ x: p.x + nx * M, y: -(zBase + p.z + nz * M) });
+    }
+    if (pushEdges) {
+      rawEdgeR = raw[0].x;
+      rawEdgeL = raw[raw.length - 1].x;
+    }
+  }
+
+  if (P.wristStyle === 'full') {
+    offsetFootprint(wristFootprint('full'), true);
+  } else if (P.wristStyle === 'balls') {
+    const rot = THREE.MathUtils.degToRad(P.wRot);
+    const half = P.wGap / 2;
+    const rxb = P.wBW / 2;
+    // 右球：右→左；左球：右→左
+    const rightBall = wristFootprint('ball', { rot: -rot, ox: half });
+    const leftBall  = wristFootprint('ball', { rot:  rot, ox: -half });
+
+    let raw;
+    if (half < rxb) {
+      // 两球在 x 方向重叠：取外轮廓（右球右侧到交点，左球交点到左侧）
+      // 找右球与左球在 x 轴上的交点：half + rxb*cos(tR) = -half + rxb*cos(tL)
+      // 简化：直接按 x 取两球中 z 较大的点，再反转为右→左
+      const all = rightBall.concat(leftBall);
+      all.sort((a, b) => a.x - b.x);
+      const byX = new Map();
+      for (const p of all) {
+        const key = Math.round(p.x * 1000);
+        if (!byX.has(key) || byX.get(key).z < p.z) byX.set(key, p);
+      }
+      raw = Array.from(byX.values()).sort((a, b) => b.x - a.x);
+    } else {
+      // 两球分离：直接右球 + 左球，都是右→左
+      raw = rightBall.concat(leftBall);
+    }
+    offsetFootprint(raw, true);
+  } else {
+    offsetFootprint(wristFootprint('none'), true);
+  }
+
+  const pBR = bottomPts[0];
+  const pBL = bottomPts[bottomPts.length - 1];
+
+  const topY_s = P.padH / 2;
+  const asym = P.topAsym;
+
+  const ltW = (P.padW / 2) * (1 + asym * 0.35);
+  const ltY = topY_s * (0.35 + asym * 0.15);
+  const pTL = { x: -ltW, y: ltY };
+
+  const rtW = (P.padW / 2) * (1 - asym * 0.12);
+  const rtY = topY_s * (0.3 - asym * 0.08);
+  const pTR = { x: rtW, y: rtY };
+
+  const pTop = { x: -padTopOff(asym), y: topY_s };
+
+  const lRange = pTL.y - pBL.y;
+  const waistLY = pBL.y + lRange * P.waistLPos;
+  const lBaseW = rawEdgeL != null ? Math.abs(rawEdgeL) : Math.abs(pBL.x);
+  const lShoulderW = Math.abs(pTL.x);
+  const waistLX = -(lBaseW + (lShoulderW - lBaseW) * (1 - P.waistLDepth));
+  const pWL = { x: waistLX, y: waistLY };
+
+  const rRange = pTR.y - pBR.y;
+  const waistRY = pBR.y + rRange * P.waistRPos;
+  const rBaseW = rawEdgeR != null ? Math.abs(rawEdgeR) : Math.abs(pBR.x);
+  const rShoulderW = Math.abs(pTR.x);
+  const waistRX = rBaseW + (rShoulderW - rBaseW) * (1 - P.waistRDepth);
+  const pWR = { x: waistRX, y: waistRY };
+
   const s = new THREE.Shape();
-  for (let i = 0; i <= N; i++) {
-    const b = (i / N) * Math.PI * 2;
-    const ux = Math.cos(b), uz = Math.sin(b);
-    let rMax = 0;
-    for (const [cx, cz, rx, rz] of ells) {
-      const px = C.x - cx, pz = C.z - cz;
-      const A = (ux / rx) ** 2 + (uz / rz) ** 2;
-      const B = 2 * (px * ux / (rx * rx) + pz * uz / (rz * rz));
-      const Q = (px / rx) ** 2 + (pz / rz) ** 2 - 1;
-      const D = B * B - 4 * A * Q;
-      if (D < 0) continue;
-      const t = (-B + Math.sqrt(D)) / (2 * A);   // 最远交点
-      if (t > rMax) rMax = t;
-    }
-    const x = C.x + rMax * ux, z = C.z + rMax * uz;
-    if (i === 0) s.moveTo(x, -z); else s.lineTo(x, -z);
+  s.moveTo(pBL.x, pBL.y);
+
+  const wr = P.waistRound; // 腰窝弧线圆润度 0..1
+  const topPull = Math.min(0.75, 0.22 + P.topRound * 0.32); // 顶部圆度控制
+
+  // 二次贝塞尔弧线控制点：sign=+1 向外凸，sign=-1 向内凹
+  function arcCP(A, B, sign, factor) {
+    const mx = (A.x + B.x) / 2;
+    const my = (A.y + B.y) / 2;
+    const dx = B.x - A.x;
+    const dy = B.y - A.y;
+    const len = Math.hypot(dx, dy) || 1;
+    // 沿行进方向左侧的法向（逆时针轮廓的外侧）
+    const nx = -dy / len;
+    const ny = dx / len;
+    const off = len * factor * wr;
+    return { x: mx + nx * sign * off, y: my + ny * sign * off };
   }
+
+  // 4b. 左下缘 → 左腰（向外微凸）
+  const cpBL_WL = arcCP(pBL, pWL, +1, 0.28);
+  s.quadraticCurveTo(cpBL_WL.x, cpBL_WL.y, pWL.x, pWL.y);
+
+  // 4c. 左腰 → 左肩（向内凹陷，与上一段 G1 连续）
+  const kL = 0.55;
+  const cpWL_TL = {
+    x: pWL.x + (pWL.x - cpBL_WL.x) * kL,
+    y: pWL.y + (pWL.y - cpBL_WL.y) * kL
+  };
+  s.quadraticCurveTo(cpWL_TL.x, cpWL_TL.y, pTL.x, pTL.y);
+
+  // 4d. 左肩 → 顶部最高点（饱满穹顶）
+  s.bezierCurveTo(
+    pTL.x, pTop.y,
+    pTop.x - (pTop.x - pTL.x) * topPull, pTop.y,
+    pTop.x, pTop.y
+  );
+
+  // 4e. 顶部最高点 → 右肩
+  s.bezierCurveTo(
+    pTop.x + (pTR.x - pTop.x) * topPull, pTop.y,
+    pTR.x, pTop.y,
+    pTR.x, pTR.y
+  );
+
+  // 4f. 右腰 → 右下缘（向外微凸）
+  const cpWR_BR = arcCP(pWR, pBR, +1, 0.28);
+  const kR = 0.55;
+
+  // 4g. 右肩 → 右腰（向内凹陷，与下一段 G1 连续）
+  const cpTR_WR = {
+    x: pWR.x + (pWR.x - cpWR_BR.x) * kR,
+    y: pWR.y + (pWR.y - cpWR_BR.y) * kR
+  };
+  s.quadraticCurveTo(cpTR_WR.x, cpTR_WR.y, pWR.x, pWR.y);
+
+  // 4h. 右腰 → 右下缘
+  s.quadraticCurveTo(cpWR_BR.x, cpWR_BR.y, pBR.x, pBR.y);
+
+  // 4g. 底部腕托包裹曲线（从右到左的采样点连线）
+  for (let i = 1; i < bottomPts.length; i++) {
+    s.lineTo(bottomPts[i].x, bottomPts[i].y);
+  }
+
   s.closePath();
   return s;
 }
@@ -406,7 +580,7 @@ function patchMapBlend(mat, modeGetter) {
         vec4 texelColor = texture2D( map, vMapUv );
         if ( uCutout > 0.5 && ( vMapUv.x < 0.0 || vMapUv.x > 1.0 || vMapUv.y < 0.0 || vMapUv.y > 1.0 ) ) texelColor = vec4( 0.0 );
         diffuseColor.rgb = mix( diffuseColor.rgb, texelColor.rgb, texelColor.a );
-        diffuseColor.a = mix( diffuseColor.a, 1.0, texelColor.a );
+        diffuseColor.a *= texelColor.a;
       #endif`
     );
   };
@@ -422,16 +596,28 @@ function blendMat(map, modeGetter, rough) {
   return m;
 }
 let padTopMat = null;
+let edgeMat = null;
 const baseTopMat  = () => { padTopMat = blendMat(tex1, () => P.t1.wrap, P.rough); return padTopMat; };
-const baseEdgeMat = () => regMat(new THREE.MeshStandardMaterial({ color: new THREE.Color(P.edgeColor), roughness: 0.85 }));
+const baseEdgeMat = () => {
+  edgeMat = regMat(new THREE.MeshStandardMaterial({ color: new THREE.Color(P.edgeColor), roughness: 0.85 }));
+  return edgeMat;
+};
 // 底色/透明度实时更新（无需重建几何）
 function updateMatBase() {
   [padTopMat, wristMat].forEach(m => {
     if (!m) return;
     m.color.set(P.matColor);
+    const wasTransparent = m.transparent;
     m.opacity = P.matOpacity;
     m.transparent = P.matOpacity < 0.999;
+    if (m.transparent !== wasTransparent) m.needsUpdate = true;
   });
+  if (edgeMat) {
+    const wasTransparent = edgeMat.transparent;
+    edgeMat.opacity = P.matOpacity;
+    edgeMat.transparent = P.matOpacity < 0.999;
+    if (edgeMat.transparent !== wasTransparent) edgeMat.needsUpdate = true;
+  }
 }
 
 function buildPad() {
@@ -664,7 +850,13 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   slider(el, '圆角', 0, 110, 1, () => P.corner, v => { P.corner = v; rebuild(); });
   const hugRows = [
     slider(el, '顶部弧度', 0.4, 2, 0.01, () => P.topRound, v => { P.topRound = v; rebuild(); }),
-    slider(el, '腕托边距', 0, 40, 1, () => P.wMargin, v => { P.wMargin = v; rebuild(); }),
+    slider(el, '顶部偏心', -0.5, 0.5, 0.01, () => P.topAsym, v => { P.topAsym = v; rebuild(); }),
+    slider(el, '外形超出腕托', 0, 80, 1, () => P.wMargin, v => { P.wMargin = v; rebuild(); }),
+    slider(el, '左腰凹深', 0, 2.5, 0.01, () => P.waistLDepth, v => { P.waistLDepth = v; rebuild(); }),
+    slider(el, '左腰位置', 0.1, 0.9, 0.01, () => P.waistLPos, v => { P.waistLPos = v; rebuild(); }),
+    slider(el, '右腰凹深', 0, 2.5, 0.01, () => P.waistRDepth, v => { P.waistRDepth = v; rebuild(); }),
+    slider(el, '右腰位置', 0.1, 0.9, 0.01, () => P.waistRPos, v => { P.waistRPos = v; rebuild(); }),
+    slider(el, '腰窝圆润度', 0, 1, 0.01, () => P.waistRound, v => { P.waistRound = v; rebuild(); }),
   ];
   window.refreshShapeUI = () => {
     hugRows.forEach(r => r.closest('.row').style.display = P.shape === 'hug' ? '' : 'none');
