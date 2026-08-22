@@ -64,6 +64,17 @@
   .dz-wrap .dropzone { margin-bottom:0; }
   .hint { font-size:11px; color:#6f7382; margin:2px 0 8px; line-height:1.5; }
 
+  /* ---------- Toast ---------- */
+  #toast-wrap { position:fixed; left:50%; bottom:28px; transform:translateX(-50%);
+    display:flex; flex-direction:column; gap:8px; z-index:9999; pointer-events:none; }
+  .toast { pointer-events:auto; max-width:320px; padding:11px 16px; border-radius:10px;
+    font-size:13px; line-height:1.5; color:#fff; background:#2a2e38;
+    border:1px solid #4a4e5c; box-shadow:0 6px 22px #0008;
+    opacity:0; transform:translateY(10px); transition:opacity .25s, transform .25s; }
+  .toast.show { opacity:1; transform:translateY(0); }
+  .toast.ok  { border-color:#3ad29f; }
+  .toast.err { border-color:#ff5e6c; }
+
   /* ---------- 按钮 ---------- */
   .btn {
     display:block; width:100%; padding:9px 0; margin:8px 0 0; border:none; border-radius:8px;
@@ -1232,7 +1243,7 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   const imp = document.createElement('input');
   imp.type = 'file'; imp.accept = '.json,.zip,application/json,application/zip'; imp.style.display = 'none';
   imp.onchange = () => {
-    if (imp.files[0]) importConfigFile(imp.files[0]).catch(e => alert('导入失败：' + e.message));
+    if (imp.files[0]) importConfigFile(imp.files[0]).catch(e => toast('导入失败：' + e.message, 'err'));
     imp.value = '';
   };
   const impBtn = mkBtn('导入配置 (JSON / ZIP)', () => imp.click());
@@ -1250,7 +1261,7 @@ function bindDropzone(dzId, fileId, onImg) {
   if (pbtn) pbtn.onclick = async e => {
     e.stopPropagation();
     if (!navigator.clipboard || !navigator.clipboard.read) {
-      alert('当前浏览器不支持主动读取剪贴板，请改用文件上传或拖拽。');
+      toast('当前浏览器不支持主动读取剪贴板，请改用文件上传或拖拽。', 'err');
       return;
     }
     pbtn.disabled = true;
@@ -1261,10 +1272,10 @@ function bindDropzone(dzId, fileId, onImg) {
         const type = it.types.find(t => t.startsWith('image/'));
         if (type) { file = await it.getType(type); break; }
       }
-      if (!file) { alert('剪贴板中没有图片。'); return; }
+      if (!file) { toast('剪贴板中没有图片。', 'err'); return; }
       loadImage(file, onImg, dz);
     } catch (err) {
-      alert('无法读取剪贴板：' + (err && err.message ? err.message : err) + '\n（需用户已授权剪贴板读取权限）');
+      toast('无法读取剪贴板：' + (err && err.message ? err.message : err) + '（需用户已授权剪贴板读取权限）', 'err');
     } finally {
       pbtn.disabled = false;
     }
@@ -1274,6 +1285,23 @@ function loadImage(file, onImg, dz) {
   const rd = new FileReader();
   rd.onload = () => onImg(rd.result, dz);
   rd.readAsDataURL(file);
+}
+/* 轻量 toast 提示（替代 alert）：type = 'ok' | 'err' | '' */
+function toast(msg, type = '', ms = 2600) {
+  let wrap = document.getElementById('toast-wrap');
+  if (!wrap) { wrap = document.createElement('div'); wrap.id = 'toast-wrap'; document.body.appendChild(wrap); }
+  const el = document.createElement('div');
+  el.className = 'toast' + (type ? ' ' + type : '');
+  el.textContent = msg;
+  wrap.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  const remove = () => {
+    el.classList.remove('show');
+    el.addEventListener('transitionend', () => el.remove(), { once: true });
+    setTimeout(() => el.remove(), 400);
+  };
+  el.addEventListener('click', remove);
+  setTimeout(remove, ms);
 }
 function setDZPreview(dz, url, onClear) {
   dz.innerHTML = '';
@@ -2073,7 +2101,7 @@ async function importConfigFile(file) {
   if (window.refreshWristUI) window.refreshWristUI();
   uiSyncers.forEach(f => f());
   syncTexUI('t1'); syncTexUI('t2');
-  alert('配置已导入');
+  toast('配置已导入', 'ok');
 }
 
 /* ================= 主循环 ================= */
@@ -2111,5 +2139,6 @@ resize();
   }
 })();
 </script>
+<div id="toast-wrap"></div>
 </body>
 </html>
