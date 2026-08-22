@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>曲线算法对比测试 — Catmull-Rom 锚点 vs 真贝塞尔手柄</title>
+<style>
+  html,body{margin:0;height:100%;background:#15171c;color:#dfe3ea;font:13px/1.5 system-ui;overflow:hidden}
+  #bar{position:fixed;top:0;left:0;right:0;height:42px;display:flex;align-items:center;gap:14px;
+       padding:0 14px;background:#1d2026;border-bottom:1px solid #2c3038;z-index:10}
+  #bar b{font-weight:600}
+  #bar button{background:#2b6cff;color:#fff;border:0;border-radius:6px;padding:6px 12px;cursor:pointer}
+  #bar .hint{color:#8b93a1;margin-left:auto}
+  #wrap{position:absolute;top:42px;left:0;right:0;bottom:0;display:flex}
+  .pane{flex:1;position:relative;border-right:1px solid #2c3038}
+  .pane:last-child{border-right:0}
+  .pane h3{position:absolute;top:10px;left:12px;margin:0;font-size:13px;font-weight:600;
+           color:#cdd3dd;background:#1b1e24;padding:4px 9px;border-radius:6px;z-index:5}
+  .pane .sub{position:absolute;top:46px;left:12px;color:#7c8593;z-index:5;max-width:46%}
+  canvas{display:block;width:100%;height:100%}
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>曲线算法对比</b>
+  <span style="color:#8b93a1">左：Catmull-Rom 锚点（拖即过该点，流畅自动保证）</span>
+  <span style="color:#8b93a1">右：真贝塞尔手柄（每锚点两个切线手柄，需手动维持平滑）</span>
+  <button id="resync">用左→初始化右</button>
+  <button id="reset">重置锚点</button>
+  <span class="hint">拖拽左侧圆形手柄 = 移动锚点；右侧菱形手柄 = 移动切线</span>
+</div>
+<div id="wrap">
+  <div class="pane"><h3>Catmull-Rom（锚点）</h3>
+    <div class="sub">锚点直接决定曲线，整条 C1 连续、无折角。右键锚点可删除，双击空白处加点。</div>
+    <canvas id="cL"></canvas></div>
+  <div class="pane"><h3>真 Cubic Bézier（手柄）</h3>
+    <div class="sub">每锚点一对切线手柄。若两手柄不共线，相邻段在锚点处出现折角——需自己拉平。</div>
+    <canvas id="cR"></canvas></div>
+</div>
+
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+// ---- 共享初始锚点（形状：一个带不对称腰收的垫面轮廓，便于看差异）----
+const INIT = () => ([
+  {x:-260, y:-170},
+  {x:-230, y:  -20},
+  {x:-150, y:  120},   // 左腰
+  {x: -60, y:  200},   // 顶点偏左
+  {x:  70, y:  185},
+  {x: 160, y:   95},   // 右腰
+  {x: 235, y:  -10},
+  {x: 260, y: -170},
+]);
+
+// 让两组独立副本
+let ptsL = INIT();                       // Catmull-Rom 锚点
+let ptsR = INIT().map(p=>({x:p.x,y:p.y,
+    h1:{x:p.x-30,y:p.y-30}, h2:{x:p.x+30,y:p.y+30}}));  // 带手柄
+
+// ---------- 通用画布设置 ----------
+function setup(canvas){
+  const r = canvas.getBoundingClientRect();
+  const dpr = Math.min(2, window.devicePixelRatio||1);
+  canvas.width = r.width*dpr; canvas.height = r.height*dpr;
+  const cam = new THREE.OrthographicCamera(-r.width/2, r.width/2, r.height/2, -r.height/2, -100, 100);
+  const sc = new THREE.Scene();
+  const ctx = canvas.getContext('2d');
+  return {canvas, ctx, cam, dpr, w:r.width, h:r.height};
+}
+// 屏幕坐标 → 画布(像素)坐标（CSS 像素，原点左上）
+function toLocal(view, e){
+  const r = view.canvas.getBoundingClientRect();
+  return {x:(e.clientX-r.left), y:(e.clientY-r.top)};
+}
+// 画布(像素,原点左上) → 世界(y 向上)
+function px2world(view, px, py){
+  return {x: px - view.w/2, y: -(py - view.h/2)};
+}
+function world2px(view, x, y){
+  return {x: x + view.w/2, y: -y + view.h/2};
+}
+
+// ---------- Catmull-Rom（向心，C1）----------
+function crSample(pts, seg){
+  // 端点幽灵点：用端点的镜像，避免端点处塌缩
+  const P=[{x:2*pts[0].x-pts[1].x,y:2*pts[0].y-pts[1].y}, ...pts,
+           {x:2*pts[pts.length-1].x-pts[pts.length-2].x, y:2*pts[pts.length-1].y-pts[pts.length-2].y}];
+  const out=[];
+  for(let i=0;i<P.length-3;i++){
+    const q0=P[i],q1=P[i+1],q2=P[i+2],q3=P[i+3];
+    const dt=(a,b)=>Math.pow((a.x-b.x)**2+(a.y-b.y)**2,0.25);
+    const t0=0,t1=t0+dt(q0,q1),t2=t1+dt(q1,q2),t3=t2+dt(q2,q3);
+    for(let j=0;j<=seg;j++){
+      const t=t1+(t2-t1)*(j/seg);
+      const lerp=(a,b,ta,tb)=>({x:(a.x*(tb-t)+b.x*(t-ta))/(tb-ta||1),y:(a.y*(tb-t)+b.y*(t-ta))/(tb-ta||1)});
+      const A1=lerp(q0,q1,t0,t1,t),A2=lerp(q1,q2,t1,t2,t),A3=lerp(q2,q3,t2,t3,t);
+      const B1=lerp(A1,A2,t0,t2,t),B2=lerp(A2,A3,t1,t3,t);
+      out.push(lerp(B1,B2,t1,t2,t));
+    }
+  }
+  return out;
+}
+
+// ---------- 真 Cubic Bézier 拼接（每段 由 锚i, 手柄h2_i, 手柄h1_{i+1}, 锚i+1）----------
+function bezSample(pts, seg){
+  const out=[];
+  for(let i=0;i<pts.length-1;i++){
+    const a=pts[i], b=pts[i+1];
+    const p0=a, p1=a.h2, p2=b.h1, p3=b;
+    for(let j=0;j<=seg;j++){
+      const t=j/seg, u=1-t;
+      const x=u*u*u*p0.x+3*u*u*t*p1.x+3*u*t*t*p2.x+t*t*t*p3.x;
+      const y=u*u*u*p0.y+3*u*u*t*p1.y+3*u*t*t*p2.y+t*t*t*p3.y;
+      out.push({x,y});
+    }
+  }
+  return out;
+}
+
+// ---------- 渲染 ----------
+function drawCatmull(view){
+  const {ctx,w,h,dpr}=view;
+  ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  // 曲线
+  const c=crSample(ptsL,24);
+  ctx.lineWidth=3; ctx.strokeStyle='#5b8cff'; ctx.beginPath();
+  c.forEach((p,i)=>{const q=world2px(view,p.x,p.y); i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y);});
+  ctx.stroke();
+  // 锚点
+  ptsL.forEach((p,i)=>{
+    const q=world2px(view,p.x,p.y);
+    ctx.beginPath();ctx.arc(q.x,q.y,9,0,7);
+    ctx.fillStyle=(i===hoverL.index&&hoverL.kind==='anchor')?'#ffd166':'#1b1e24';
+    ctx.fill();ctx.lineWidth=2;ctx.strokeStyle='#5b8cff';ctx.stroke();
+  });
+  ctx.restore();
+}
+function drawBezier(view){
+  const {ctx,w,h,dpr}=view;
+  ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  // 手柄连线
+  ctx.strokeStyle='#3a4150'; ctx.lineWidth=1;
+  ptsR.forEach(p=>{
+    [p.h1,p.h2].forEach(h=>{const a=world2px(view,p.x,p.y),b=world2px(view,h.x,h.y);
+      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();});
+  });
+  // 曲线
+  const c=bezSample(ptsR,24);
+  ctx.lineWidth=3; ctx.strokeStyle='#ff7a59'; ctx.beginPath();
+  c.forEach((p,i)=>{const q=world2px(view,p.x,p.y); i?ctx.lineTo(q.x,q.y):ctx.moveTo(q.x,q.y);});
+  ctx.stroke();
+  // 锚点 + 手柄
+  ptsR.forEach((p,i)=>{
+    const a=world2px(view,p.x,p.y);
+    ctx.beginPath();ctx.arc(a.x,a.y,9,0,7);
+    ctx.fillStyle=(hoverR.index===i&&hoverR.kind==='anchor')?'#ffd166':'#1b1e24';
+    ctx.fill();ctx.lineWidth=2;ctx.strokeStyle='#ff7a59';ctx.stroke();
+    [['h1'],['h2']].forEach(([k])=>{
+      const b=world2px(view,p[k].x,p[k].y);
+      ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+      ctx.strokeStyle='#3a4150';ctx.stroke();
+      ctx.beginPath();ctx.rect(b.x-6,b.y-6,12,12);
+      ctx.fillStyle=(hoverR.index===i&&hoverR.kind===k)?'#ffd166':'#ff7a59';ctx.fill();
+    });
+  });
+  ctx.restore();
+}
+
+// ---------- 命中检测 ----------
+function hitAnchor(view, pts, e, r=11){
+  const loc=toLocal(view,e);
+  const m=px2world(view,loc.x,loc.y);
+  for(let i=0;i<pts.length;i++){
+    if(Math.hypot(pts[i].x-m.x,pts[i].y-m.y)<=r) return i;
+  }
+  return -1;
+}
+function hitHandle(view, pts, e, r=9){
+  const loc=toLocal(view,e);
+  const m=px2world(view,loc.x,loc.y);
+  for(let i=0;i<pts.length;i++){
+    for(const k of ['h1','h2']){
+      if(Math.hypot(pts[i][k].x-m.x,pts[i][k].y-m.y)<=r) return {i,k};
+    }
+  }
+  return null;
+}
+
+const viewL=setup(document.getElementById('cL'));
+const viewR=setup(document.getElementById('cR'));
+let hoverL={index:-1,kind:''}, hoverR={index:-1,kind:''};
+let dragL=null, dragR=null;
+
+// ---- 左：Catmull-Rom ----
+viewL.canvas.addEventListener('pointerdown',e=>{
+  const i=hitAnchor(viewL,ptsL,e);
+  if(i>=0){dragL=i; viewL.canvas.setPointerCapture(e.pointerId);}
+});
+viewL.canvas.addEventListener('pointermove',e=>{
+  if(dragL!==null){
+    const m=px2world(viewL,...Object.values(toLocal(viewL,e)));
+    ptsL[dragL].x=m.x; ptsL[dragL].y=m.y; drawCatmull(viewL);
+  } else {
+    hoverL.index=hitAnchor(viewL,ptsL,e); hoverL.kind='anchor'; drawCatmull(viewL);
+  }
+});
+viewL.canvas.addEventListener('pointerup',e=>{dragL=null;});
+viewL.canvas.addEventListener('dblclick',e=>{
+  const m=px2world(viewL,...Object.values(toLocal(viewL,e)));
+  // 插入到最近相邻锚点之间
+  let bi=0,bd=Infinity;
+  for(let i=0;i<ptsL.length-1;i++){const mx=(ptsL[i].x+ptsL[i+1].x)/2,my=(ptsL[i].y+ptsL[i+1].y)/2;
+    const d=Math.hypot(mx-m.x,my-m.y); if(d<bd){bd=d;bi=i;}}
+  ptsL.splice(bi+1,0,{x:m.x,y:m.y}); drawCatmull(viewL);
+});
+viewL.canvas.addEventListener('contextmenu',e=>{
+  e.preventDefault(); const i=hitAnchor(viewL,ptsL,e);
+  if(i>0&&i<ptsL.length-1){ptsL.splice(i,1); drawCatmull(viewL);}
+});
+
+// ---- 右：Bézier 手柄 ----
+viewR.canvas.addEventListener('pointerdown',e=>{
+  const hh=hitHandle(viewR,ptsR,e);
+  if(hh){dragR=hh; viewR.canvas.setPointerCapture(e.pointerId); return;}
+  const i=hitAnchor(viewR,ptsR,e);
+  if(i>=0){dragR={i,k:'anchor'}; viewR.canvas.setPointerCapture(e.pointerId);}
+});
+viewR.canvas.addEventListener('pointermove',e=>{
+  const m=px2world(viewR,...Object.values(toLocal(viewR,e)));
+  if(dragR){
+    if(dragR.k==='anchor'){
+      const dx=m.x-ptsR[dragR.i].x, dy=m.y-ptsR[dragR.i].y;
+      ptsR[dragR.i].x=m.x; ptsR[dragR.i].y=m.y;
+      ptsR[dragR.i].h1.x+=dx; ptsR[dragR.i].h1.y+=dy;
+      ptsR[dragR.i].h2.x+=dx; ptsR[dragR.i].h2.y+=dy;
+    } else {
+      ptsR[dragR.i][dragR.k].x=m.x; ptsR[dragR.i][dragR.k].y=m.y;
+      // 默认：拖动一个手柄，另一个自动对称（保持共线=平滑）；按住 Shift 则独立
+      const a=ptsR[dragR.i];
+      if(!e.shiftKey){
+        const oth = dragR.k==='h1'?'h2':'h1';
+        a[oth].x = a.x-(m.x-a.x);
+        a[oth].y = a.y-(m.y-a.y);
+      }
+    }
+    drawBezier(viewR);
+  } else {
+    const hh=hitHandle(viewR,ptsR,e);
+    if(hh){hoverR=hh;}
+    else {const i=hitAnchor(viewR,ptsR,e); hoverR={index:i,kind:i>=0?'anchor':''};}
+    drawBezier(viewR);
+  }
+});
+viewR.canvas.addEventListener('pointerup',e=>{dragR=null;});
+
+// ---- 按钮 ----
+document.getElementById('resync').onclick=()=>{
+  ptsR=ptsL.map(p=>({x:p.x,y:p.y,h1:{x:p.x-30,y:p.y-30},h2:{x:p.x+30,y:p.y+30}}));
+  drawBezier(viewR);
+};
+document.getElementById('reset').onclick=()=>{
+  ptsL=INIT(); ptsR=INIT().map(p=>({x:p.x,y:p.y,h1:{x:p.x-30,y:p.y-30},h2:{x:p.x+30,y:p.y+30}}));
+  drawCatmull(viewL); drawBezier(viewR);
+};
+
+function resize(){location.reload();}
+window.addEventListener('resize',resize);
+drawCatmull(viewL); drawBezier(viewR);
+</script>
+</body>
+</html>

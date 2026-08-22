@@ -199,13 +199,16 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
+/* ================= 工具函数 ================= */
+const norm2 = (x, y) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
+
 /* ================= 参数 ================= */
 const P = {
   // 外形
   shape: 'classic',   // rect | ellipse | stadium | classic
   padW: 230, padH: 265, corner: 48, thick: 5, bevel: 3,
   edgeColor: '#f4f1ec',
-  edgeSame: false,   // true=边缘与上表面作为整体着色（共享本色+贴图）
+  edgeSame: true,   // true=边缘与上表面作为整体着色（共享本色+贴图）
   // 腕托
   wristStyle: 'full', // none | full | balls
   wH: 27,             // 隆起高度
@@ -377,7 +380,8 @@ function bakeClassicCtrl(pBL, pBR, dBLv, dBRv, topY) {
     mk(halfW * 0.97, yBR + spanR * 0.32),            // 右腰
     { ...mk(pBR.x, yBR), pin: true },
   ];
-  // 端点切线继承足迹方向（G1 衔接），中间锚点按相邻点方向取对称切线
+  // 端点切线：严格继承足迹端点切线做 G1 衔接（左右对称，数学正确）。
+  // 底轮廓在端点处的切向与上半轮廓起点切向天然反向（闭曲线），故取 -dBLv / -dBRv。
   autoSmoothClassicCtrl(pts);
   const n = pts.length - 1;
   const t0 = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) * 0.42;
@@ -443,7 +447,6 @@ function makeClassicShape() {
   const BSTEPS = 100;
   let rawEdgeL = null; // 未加 overhang 的腕托原始侧缘 x（用于腰线基准）
   let rawEdgeR = null;
-  const norm2 = (x, y) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
 
   // 采样某一腕托轮廓在前半圆(z>=0)上的“原始足迹”（未经 overhang 偏移），
   // 与 3D 碗托几何体保持同一套单位球变形/旋转/缩放，返回 [{x, z}]
@@ -648,9 +651,11 @@ function makeClassicShape() {
 
   const topY = padH / 2;
 
-  // 底部足迹两端切线：贝塞尔端点手柄沿此方向，保证与足迹 G1 衔接
-  const dBLv = norm2(pBL.x - bottomPts[bottomPts.length - 2].x,
-                     pBL.y - bottomPts[bottomPts.length - 2].y);
+  // 底部足迹两端切线：统一取“离开端点沿底轮廓向内”的方向（右→左）。
+  // dBRv 原已是 pBR → bottomPts[1]（朝下），dBLv 需取 pBL → bottomPts[n-2]（朝下），
+  // 使左右端点的上半轮廓切线同为朝上，视觉对称圆润。
+  const dBLv = norm2(bottomPts[bottomPts.length - 2].x - pBL.x,
+                     bottomPts[bottomPts.length - 2].y - pBL.y);
   const dBRv = norm2(bottomPts[1].x - pBR.x, bottomPts[1].y - pBR.y);
 
   // ── 上半轮廓：三次贝塞尔锚点链 ──────────────────────────────────────────
@@ -1040,18 +1045,18 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   const el = document.getElementById('shapeCtrls');
   selectRow(el, '轮廓', [['rect','圆角矩形'],['ellipse','椭圆'],['stadium','胶囊形'],['classic','经典']],
     () => P.shape, v => { P.shape = v; rebuild(); refreshShapeUI(); });
-  slider(el, '宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); if (curveEdit) setEditOrtho(); });
-  // 经典款的长度由「腕托顶距」派生，故该滑条仅在其余轮廓下显示
+  // 宽度/圆角仅作用于非经典轮廓，经典款由腕托足迹 + 贝塞尔锚点决定，故归入 nonClassicRows 隐藏
   const nonClassicRows = [
+    slider(el, '宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); if (curveEdit) setEditOrtho(); }),
     slider(el, '长度', 150, 340, 1, () => P.padH, v => { P.padH = v; rebuild(); }),
+    slider(el, '圆角', 0, 110, 1, () => P.corner, v => { P.corner = v; rebuild(); }),
   ];
-  slider(el, '圆角', 0, 110, 1, () => P.corner, v => { P.corner = v; rebuild(); });
   // 经典款：上半轮廓由贝塞尔锚点决定，仅保留驱动足迹与总长的两个参数。
   // 拖动这两个滑条只平移两端 pin 锚点，用户拖出的形状不会被重置。
   const classicRows = [
     slider(el, '腕托顶距', 40, 240, 1, () => P.wristTopGap, v => { P.wristTopGap = v; rebuild(); if (curveEdit) setEditOrtho(); }),
-    slider(el, '外形超出腕托', 0, 10, 0.01, () => P.wMargin, v => { P.wMargin = v; rebuild(); if (curveEdit) setEditOrtho(); }),
     checkRow(el, '编辑轮廓（拖拽贝塞尔控制点）', () => curveEdit, v => setCurveEdit(v)),
+    slider(el, '外形超出腕托', 0, 10, 0.01, () => P.wMargin, v => { P.wMargin = v; rebuild(); if (curveEdit) setEditOrtho(); }),
     btnRow(el, '轮廓锚点', '重置为默认形状', () => { P.classicCtrl = null; rebuild(); drawCurveOverlay(); }),
   ];
   window.refreshShapeUI = () => {
@@ -1772,8 +1777,7 @@ rebuild();
 updateLights();
 updateBackground();
 resize();
-// 默认：经典模式 + 编辑轮廓勾选，方便调试控制曲线与模型外形对齐
-if (P.shape === 'classic') setCurveEdit(true);
+// 默认：经典模式，编辑轮廓默认不勾选（用户按需开启）
 
 (function loop() {
   requestAnimationFrame(loop);

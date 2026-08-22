@@ -1,2 +1,7 @@
 node_modules/
 .playwright-cli/*
+server.log
+*.png
+*.yaml
+_diag*
+
