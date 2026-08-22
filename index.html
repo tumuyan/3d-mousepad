@@ -965,6 +965,7 @@ function updateBackground() {
 }
 
 /* ================= UI 构建 ================= */
+const uiSyncers = []; // 控件同步器：导入配置后遍历刷新显示值
 function slider(parent, label, min, max, step, get, set) {
   const row = document.createElement('div'); row.className = 'row';
   const lb = document.createElement('label'); lb.textContent = label;
@@ -972,6 +973,7 @@ function slider(parent, label, min, max, step, get, set) {
   inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
   const val = document.createElement('span'); val.className = 'val'; val.textContent = get();
   inp.oninput = () => { set(parseFloat(inp.value)); val.textContent = inp.value; };
+  uiSyncers.push(() => { inp.value = get(); val.textContent = get(); });
   row.append(lb, inp, val); parent.appendChild(row);
   return inp;
 }
@@ -980,6 +982,7 @@ function colorRow(parent, label, get, set) {
   const lb = document.createElement('label'); lb.textContent = label;
   const inp = document.createElement('input'); inp.type = 'color'; inp.value = get();
   inp.oninput = () => set(inp.value);
+  uiSyncers.push(() => { inp.value = get(); });
   row.append(lb, inp); parent.appendChild(row);
 }
 function selectRow(parent, label, opts, get, set) {
@@ -991,6 +994,7 @@ function selectRow(parent, label, opts, get, set) {
   });
   sel.value = get();
   sel.onchange = () => set(sel.value);
+  uiSyncers.push(() => { sel.value = get(); });
   row.append(lb, sel); parent.appendChild(row);
   return sel;
 }
@@ -999,6 +1003,7 @@ function checkRow(parent, label, get, set) {
   const lb = document.createElement('label'); lb.textContent = label;
   const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = get();
   inp.onchange = () => set(inp.checked);
+  uiSyncers.push(() => { inp.checked = get(); });
   row.append(lb, inp); parent.appendChild(row);
   return inp;
 }
@@ -1131,6 +1136,19 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   btn.className = 'btn'; btn.textContent = '导出 PNG 渲染图';
   btn.onclick = exportPNG;
   el.appendChild(btn);
+  // 配置导入 / 导出
+  const mkBtn = (text, fn) => { const b = document.createElement('button'); b.className = 'btn'; b.textContent = text; b.style.marginTop = '6px'; b.onclick = fn; el.appendChild(b); return b; };
+  mkBtn('导出配置 (JSON，不含贴图)', exportConfigJSON);
+  mkBtn('导出配置 + 贴图 (ZIP)', exportConfigZip);
+  const imp = document.createElement('input');
+  imp.type = 'file'; imp.accept = '.json,.zip,application/json,application/zip'; imp.style.display = 'none';
+  imp.onchange = () => {
+    if (imp.files[0]) importConfigFile(imp.files[0]).catch(e => alert('导入失败：' + e.message));
+    imp.value = '';
+  };
+  const impBtn = mkBtn('导入配置 (JSON / ZIP)', () => imp.click());
+  impBtn.style.background = '#2f6f4f';
+  el.appendChild(imp);
 }
 
 /* ================= 上传 ================= */
@@ -1760,6 +1778,169 @@ function exportPNG() {
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   const a = document.createElement('a');
   a.href = url; a.download = 'mousepad-3d.png'; a.click();
+}
+
+/* ================= 配置导入 / 导出 ================= */
+// —— 最小 ZIP（store 模式，无压缩，零依赖）+ CRC32 ——
+const crcTable = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+// 大数组安全转 base64（避免 String.fromCharCode(...大数组) 栈溢出）
+function b64FromBytes(u8) {
+  let s = ''; const CHUNK = 0x8000;
+  for (let i = 0; i < u8.length; i += CHUNK) s += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
+  return btoa(s);
+}
+// 将若干文件 [{name, bytes}] 打包成 store 模式 zip 的 Blob
+function makeZip(files) {
+  const enc = new TextEncoder();
+  const chunks = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const data = f.bytes;
+    const nameBytes = enc.encode(f.name);
+    const crc = crc32(data);
+    const local = new Uint8Array(30 + nameBytes.length + data.length);
+    const dv = new DataView(local.buffer);
+    dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true); dv.setUint16(6, 0, true);
+    dv.setUint16(8, 0, true); dv.setUint16(10, 0, true); // store
+    dv.setUint32(14, crc, true); dv.setUint32(18, data.length, true); dv.setUint32(22, data.length, true);
+    dv.setUint16(26, nameBytes.length, true); dv.setUint16(28, 0, true);
+    local.set(nameBytes, 30); local.set(data, 30 + nameBytes.length);
+    chunks.push(local);
+    const cd = new Uint8Array(46 + nameBytes.length);
+    const cdv = new DataView(cd.buffer);
+    cdv.setUint32(0, 0x02014b50, true); cdv.setUint16(4, 20, true); cdv.setUint16(6, 20, true);
+    cdv.setUint16(8, 0, true); cdv.setUint16(10, 0, true); cdv.setUint16(12, 0, true);
+    cdv.setUint32(16, crc, true); cdv.setUint32(20, data.length, true); cdv.setUint32(24, data.length, true);
+    cdv.setUint16(28, nameBytes.length, true); cdv.setUint16(30, 0, true); cdv.setUint16(32, 0, true);
+    cdv.setUint16(34, 0, true); cdv.setUint16(36, 0, true); cdv.setUint32(38, 0, true);
+    cdv.setUint32(42, offset, true);
+    cd.set(nameBytes, 46);
+    central.push(cd);
+    offset += local.length;
+  }
+  let centralSize = 0; central.forEach(c => centralSize += c.length);
+  const centralOffset = offset;
+  const end = new Uint8Array(22);
+  const edv = new DataView(end.buffer);
+  edv.setUint32(0, 0x06054b50, true); edv.setUint16(8, files.length, true);
+  edv.setUint16(10, files.length, true); edv.setUint32(12, centralSize, true);
+  edv.setUint32(16, centralOffset, true); edv.setUint16(20, 0, true);
+  const blob = new Blob([...chunks, ...central, end], { type: 'application/zip' });
+  return blob;
+}
+// 解析 store 模式 zip，返回 Map<name, Uint8Array>
+function parseZip(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const files = new Map();
+  // 从末尾 EOCD 找 central directory 偏移
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= 0; i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
+  if (eocd < 0) throw new Error('不是有效的 ZIP 文件');
+  const cdOffset = dv.getUint32(eocd + 16, true);
+  let p = cdOffset;
+  const count = dv.getUint16(eocd + 10, true);
+  for (let i = 0; i < count; i++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true);
+    const crc = dv.getUint32(p + 16, true);
+    const compSize = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const localOffset = dv.getUint32(p + 42, true);
+    const nameBytes = bytes.subarray(p + 46, p + 46 + nameLen);
+    const name = new TextDecoder().decode(nameBytes);
+    const ldv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const dataOff = localOffset + 30 + ldv.getUint16(localOffset + 26, true) + ldv.getUint16(localOffset + 28, true);
+    const data = bytes.subarray(dataOff, dataOff + compSize);
+    if (method === 0 && crc32(data) !== crc) console.warn('ZIP 条目 CRC 校验失败:', name);
+    files.set(name, data);
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return files;
+}
+
+// —— 配置序列化 ——
+function texturePayload(slot) {
+  const tex = slot === 1 ? tex1 : tex2;
+  if (!tex || !tex.image || !tex.image.src || tex.image.src.indexOf('data:') !== 0) return null;
+  const src = tex.image.src;
+  const m = src.match(/^data:(image\/[a-z]+);base64,(.*)$/);
+  if (!m) return null;
+  return { name: slot === 1 ? 'tex1' : 'tex2', mime: m[1], base64: m[2] };
+}
+function serializeConfig(withTextures) {
+  const cfg = { type: '3dm-config', version: 1, params: P };
+  if (withTextures) {
+    const t = [];
+    const t1 = texturePayload(1), t2 = texturePayload(2);
+    if (t1) t.push(t1); if (t2) t.push(t2);
+    if (t.length) cfg.textures = t;
+  }
+  return cfg;
+}
+function downloadBlob(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function exportConfigJSON() {
+  const blob = new Blob([JSON.stringify(serializeConfig(false), null, 2)], { type: 'application/json' });
+  downloadBlob(blob, 'mousepad-config.json');
+}
+function exportConfigZip() {
+  const cfg = serializeConfig(true);
+  const enc = new TextEncoder();
+  const files = [{ name: 'config.json', bytes: enc.encode(JSON.stringify(cfg, null, 2)) }];
+  (cfg.textures || []).forEach(t => {
+    const bin = Uint8Array.from(atob(t.base64), c => c.charCodeAt(0));
+    const ext = t.mime.split('/')[1] || 'png';
+    files.push({ name: `${t.name}.${ext}`, bytes: bin });
+  });
+  const blob = makeZip(files);
+  downloadBlob(blob, 'mousepad-config.zip');
+}
+async function importConfigFile(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  let cfg;
+  if (file.name.toLowerCase().endsWith('.zip')) {
+    const files = parseZip(buf);
+    const json = files.get('config.json');
+    if (!json) throw new Error('ZIP 中缺少 config.json');
+    cfg = JSON.parse(new TextDecoder().decode(json));
+    for (const [name, data] of files) {
+      if (name === 'config.json') continue;
+      const slot = name.startsWith('tex1') ? 1 : name.startsWith('tex2') ? 2 : 0;
+      if (!slot) continue;
+      const mime = name.endsWith('.png') ? 'image/png' : name.endsWith('.jpg') || name.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
+      const dataURL = `data:${mime};base64,` + b64FromBytes(data);
+      if (slot === 1) {
+        makeTex(dataURL, t => { tex1 = t; refreshTextures(); rebuild(); setDZPreview(document.getElementById('dz1'), dataURL, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { tex1 = null; rebuild(); })); });
+      } else {
+        makeTex(dataURL, t => { tex2 = t; refreshTextures(); rebuild(); setDZPreview(document.getElementById('dz2'), dataURL, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { tex2 = null; refreshTextures(); rebuild(); })); });
+      }
+    }
+  } else {
+    cfg = JSON.parse(new TextDecoder().decode(buf));
+  }
+  if (!cfg || cfg.type !== '3dm-config' || !cfg.params) throw new Error('文件格式不正确');
+  Object.assign(P, cfg.params);
+  P.classicCtrl = cfg.params.classicCtrl || null;
+  rebuild();
+  refreshShapeUI();
+  uiSyncers.forEach(f => f());
+  syncTexUI('t1'); syncTexUI('t2');
+  alert('配置已导入');
 }
 
 /* ================= 主循环 ================= */
