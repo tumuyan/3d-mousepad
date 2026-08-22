@@ -184,11 +184,12 @@ const P = {
   shape: 'rect',      // rect | ellipse | stadium
   padW: 230, padH: 265, corner: 48, thick: 5, bevel: 3,
   edgeColor: '#f4f1ec',
+  edgeSame: false,   // true=边缘与上表面作为整体着色（共享本色+贴图）
   // 腕托
   wristStyle: 'full', // none | full | balls
   wH: 20,             // 隆起高度
   wW: 150,            // 宽度（整体式）
-  wD: 82,             // 前后长度
+  wD: 74,             // 前后长度
   wPos: 20,           // 距底边距离
   wGap: 78,           // 双球间距
   wBW: 78,            // 单球宽度
@@ -207,7 +208,8 @@ const P = {
   // 材质
   rough: 0.55,
   matColor: '#d9d5cf',   // 材质底色（贴图叠加在其上方）
-  matOpacity: 1,         // 底色不透明度
+  matOpacity: 1,         // 本色不透明度（整体）
+  texOpacity: 1,         // 贴图不透明度（仅影响贴图叠加强度）
   // 贴图变换
   t1: { s: 1, ox: 0, oy: 0, r: 0, wrap: 'cutout', asp: 1 },
   t2: { s: 1, ox: 0, oy: 0, r: 0, wrap: 'cutout', asp: 1 },
@@ -570,17 +572,26 @@ function planarUV(geo) {
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
 }
 
-// 贴图按 alpha 叠加在材质底色上方；cutout 模式下超出 [0,1] 的贴图区域镂空（透出底色）
+// 贴图与本色作为两个独立图层，用标准 over 合成：
+//   本色层 alpha = uBaseOpacity（本色不透明度）
+//   贴图层 alpha = texelColor.a * uTexOpacity（贴图自身 alpha × 贴图不透明度）
+// 两者互不干扰，贴图 alpha 用于融合
 function patchMapBlend(mat, modeGetter) {
   mat.onBeforeCompile = sh => {
     sh.uniforms.uCutout = { value: modeGetter() === 'cutout' ? 1 : 0 };
-    sh.fragmentShader = ('uniform float uCutout;\n' + sh.fragmentShader).replace(
+    sh.uniforms.uTexOpacity = { value: P.texOpacity };
+    sh.uniforms.uBaseOpacity = { value: P.matOpacity };
+    mat.userData.shader = sh;
+    sh.fragmentShader = ('uniform float uCutout;\nuniform float uTexOpacity;\nuniform float uBaseOpacity;\n' + sh.fragmentShader).replace(
       '#include <map_fragment>',
       `#ifdef USE_MAP
         vec4 texelColor = texture2D( map, vMapUv );
         if ( uCutout > 0.5 && ( vMapUv.x < 0.0 || vMapUv.x > 1.0 || vMapUv.y < 0.0 || vMapUv.y > 1.0 ) ) texelColor = vec4( 0.0 );
-        diffuseColor.rgb = mix( diffuseColor.rgb, texelColor.rgb, texelColor.a );
-        diffuseColor.a *= texelColor.a;
+        float texA  = texelColor.a * uTexOpacity;   // 贴图层有效不透明度
+        float baseA = uBaseOpacity;                 // 本色层不透明度
+        float outA  = texA + baseA * ( 1.0 - texA ); // 合成总不透明度
+        vec3  outRGB = ( texelColor.rgb * texA + diffuseColor.rgb * baseA * ( 1.0 - texA ) ) / max( outA, 1e-4 );
+        diffuseColor = vec4( outRGB, outA );
       #endif`
     );
   };
@@ -589,8 +600,8 @@ function blendMat(map, modeGetter, rough) {
   const m = regMat(new THREE.MeshStandardMaterial({
     map, roughness: rough,
     color: new THREE.Color(P.matColor),
-    opacity: P.matOpacity,
-    transparent: P.matOpacity < 0.999,
+    opacity: 1,                                  // 整体不透明度由 uBaseOpacity 控制
+    transparent: P.matOpacity < 0.999 || P.texOpacity < 0.999,
   }));
   patchMapBlend(m, modeGetter);
   return m;
@@ -599,25 +610,31 @@ let padTopMat = null;
 let edgeMat = null;
 const baseTopMat  = () => { padTopMat = blendMat(tex1, () => P.t1.wrap, P.rough); return padTopMat; };
 const baseEdgeMat = () => {
-  edgeMat = regMat(new THREE.MeshStandardMaterial({ color: new THREE.Color(P.edgeColor), roughness: 0.85 }));
+  if (P.edgeSame) {
+    // 与上表面共享同一材质（含贴图与本色），整体着色
+    edgeMat = padTopMat;
+  } else {
+    edgeMat = regMat(new THREE.MeshStandardMaterial({ color: new THREE.Color(P.edgeColor), roughness: 0.85 }));
+  }
   return edgeMat;
 };
 // 底色/透明度实时更新（无需重建几何）
 function updateMatBase() {
-  [padTopMat, wristMat].forEach(m => {
+  const wantTransparent = P.matOpacity < 0.999 || P.texOpacity < 0.999;
+  const mats = [padTopMat, wristMat];
+  // edgeSame 时边缘与上表面共用同一材质，无需单独处理
+  if (P.edgeSame && edgeMat && edgeMat !== padTopMat) mats.push(edgeMat);
+  mats.forEach(m => {
     if (!m) return;
     m.color.set(P.matColor);
     const wasTransparent = m.transparent;
-    m.opacity = P.matOpacity;
-    m.transparent = P.matOpacity < 0.999;
+    m.transparent = wantTransparent;
     if (m.transparent !== wasTransparent) m.needsUpdate = true;
+    if (m.userData.shader) {
+      m.userData.shader.uniforms.uTexOpacity.value = P.texOpacity;
+      m.userData.shader.uniforms.uBaseOpacity.value = P.matOpacity;
+    }
   });
-  if (edgeMat) {
-    const wasTransparent = edgeMat.transparent;
-    edgeMat.opacity = P.matOpacity;
-    edgeMat.transparent = P.matOpacity < 0.999;
-    if (edgeMat.transparent !== wasTransparent) edgeMat.needsUpdate = true;
-  }
 }
 
 function buildPad() {
@@ -638,7 +655,7 @@ function buildPad() {
   geo.rotateX(-Math.PI / 2);
   planarUV(geo);
 
-  padMesh = new THREE.Mesh(geo, [baseTopMat(), baseEdgeMat()]);
+  padMesh = new THREE.Mesh(geo, [baseTopMat(), baseEdgeMat()]);   // [0]=顶面, [1]=边缘
   padMesh.castShadow = padMesh.receiveShadow = true;
   scene.add(padMesh);
 
@@ -864,10 +881,13 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   refreshShapeUI();
   slider(el, '厚度', 2, 14, 0.5, () => P.thick, v => { P.thick = v; rebuild(); });
   slider(el, '边缘倒角', 0.5, 8, 0.5, () => P.bevel, v => { P.bevel = v; rebuild(); });
-  colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; rebuild(); });
+  checkRow(el, '边缘同色（整体着色含贴图）', () => P.edgeSame, v => { P.edgeSame = v; if (edgeColorRow) edgeColorRow.style.display = v ? 'none' : ''; rebuild(); });
+  const edgeColorRow = colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; rebuild(); });
+  if (P.edgeSame && edgeColorRow) edgeColorRow.style.display = 'none';
   slider(el, '表面粗糙', 0.05, 1, 0.01, () => P.rough, v => { P.rough = v; rebuild(); });
   colorRow(el, '材质底色', () => P.matColor, v => { P.matColor = v; updateMatBase(); });
-  slider(el, '不透明度', 0, 1, 0.01, () => P.matOpacity, v => { P.matOpacity = v; updateMatBase(); });
+  slider(el, '本色不透明度', 0, 1, 0.01, () => P.matOpacity, v => { P.matOpacity = v; updateMatBase(); });
+  slider(el, '贴图不透明度', 0, 1, 0.01, () => P.texOpacity, v => { P.texOpacity = v; updateMatBase(); });
 }
 
 /* --- 腕托 --- */
