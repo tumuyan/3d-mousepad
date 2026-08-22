@@ -3,7 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>3D MousePad Studio</title>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>3D MousePad Studio v2026-08-22-1960-ALL-PTS</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { height:100%; overflow:hidden; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
@@ -101,10 +104,27 @@
     padding:6px 14px; border-radius:8px; font-size:12px; pointer-events:none; display:none;
     white-space:nowrap;
   }
+
+/* 轮廓控制点叠加层：仅在编辑轮廓时显示并接收指针事件 */
+#curveLayer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  z-index: 4;
+  cursor: crosshair;
+}
+#curveLayer.on {
+  display: block;
+}
+
+
   #dropHint {
     position:absolute; inset:0; display:none; align-items:center; justify-content:center;
     background:#0009; color:#ffb9d6; font-size:20px; font-weight:600; pointer-events:none; z-index:5;
   }
+
 </style>
 <script type="importmap">
 {
@@ -156,6 +176,7 @@
 
   <main id="stage">
     <canvas id="view"></canvas>
+    <canvas id="curveLayer"></canvas>
     <div id="toolbar">
       <div class="seg" id="modeSeg" title="鼠标交互模式">
         <button data-mode="view" class="active">视角</button>
@@ -181,7 +202,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 /* ================= 参数 ================= */
 const P = {
   // 外形
-  shape: 'rect',      // rect | ellipse | stadium
+  shape: 'classic',   // rect | ellipse | stadium | classic
   padW: 230, padH: 265, corner: 48, thick: 5, bevel: 3,
   edgeColor: '#f4f1ec',
   edgeSame: false,   // true=边缘与上表面作为整体着色（共享本色+贴图）
@@ -198,17 +219,15 @@ const P = {
   wRot: 10,            // 双球旋转角（两球反向）
   wEgg: 0.1,            // 双球鹅蛋度 -0.45..0.45
   wJoin: 16,           // 双球过渡弧宽度（0=保留原始相交尖角）
-  wMargin: 2,        // 经典款：外形超出腕托的距离（overhang）
-  topRound: 0.78,     // 经典款：顶部弧度（纵向半径/宽度半径）
-  topAsym: 0.15,      // 经典款：顶部左右不对称度（>0 左上饱满）
-  waistLDepth: 0.95,  // 经典款：左腰内凹深度
-  waistLPos: 0.48,    // 经典款：左腰高度位置（0=腕托顶 1=左肩）
-  waistRDepth: 0.80,  // 经典款：右腰内凹深度
-  waistRPos: 0.25,    // 经典款：右腰高度位置（0=腕托顶 1=右肩）
-  waistRound: 0.65,   // 经典款：腰窝弧线圆润度（0=偏尖，1=饱满连续弧线）
+  wMargin: 2,         // 经典款：外形超出腕托的距离（overhang）
+  wristTopGap: 150,   // 经典款：腕托顶 → 轮廓顶的距离（决定垫身总长）
+  // 经典款上半轮廓：一串三次贝塞尔锚点（含切线手柄），由腕托足迹自动烘焙后可手动拖拽。
+  // null 表示尚未烘焙，首次生成时按 wristTopGap 自动生成。
+  // 结构：[{ x, y, h1:{x,y}, h2:{x,y}, pin?:true }]，pin 点为足迹接缝，位置由腕托决定
+  classicCtrl: null,
   // 材质
   rough: 0.55,
-  matColor: '#d9d5cf',   // 材质底色（贴图叠加在其上方）
+  matColor: '#b6e3a8',   // 材质底色（贴图叠加在其上方）
   matOpacity: 1,         // 本色不透明度（整体）
   texOpacity: 1,         // 贴图不透明度（仅影响贴图叠加强度）
   // 贴图变换
@@ -233,6 +252,10 @@ renderer.localClippingEnabled = true;
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, 1, 1, 6000);
+// 编辑态专用正交相机：正俯视，Shape-X 映屏幕 X，Shape-Y 映世界 -Z 映屏幕 Y。
+// 使用独立相机意味着渲染与覆盖层投影严格同源、aspect 由 setEditOrtho 同步计算，
+// 无需依赖 PerspectiveCamera 的退化 lookAt 或 up 向量。
+let orthoCam = null;       // 延迟创建（需要等 stage 拿到尺寸后才能正确设置 left/right/top/bottom）
 // 透视视角：相机在水平面上绕 Z 轴逆时针 45°，再抬高
 const PERSP_POS = (() => {
   const d = 600, a = -Math.PI / 4; // 顺时针 45°，缩小距离
@@ -319,17 +342,102 @@ const allMats = [];
 
 function regMat(m) { allMats.push(m); m.envMapIntensity = P.env; return m; }
 
-function padTopOff(asym) {
-  // 顶部最高点随左右不对称度偏移：asym>0 时左肩更宽，顶点略偏左
-  return (P.padW / 2) * asym * 0.42;
+// 经典款的垫身总长为派生值：腕托足迹（含 overhang）纵向跨度 + 腕托顶距。
+// 缓存由 makeClassicShape() 每次重建时写入，其余消费点（UV/zBase）统一读取，
+// 保证同一帧内几何与贴图坐标一致。
+let classicPadHCache = null;
+let classicZBaseCache = null;
+function padHeight() {
+  return (P.shape === 'classic' && classicPadHCache != null) ? classicPadHCache : P.padH;
+}
+// 腕托中心的 z 基准：经典款取自轮廓推算结果，其余款式按总长居中推算
+function wristZBase() {
+  if (P.shape === 'classic' && classicZBaseCache != null) return classicZBaseCache;
+  return padHeight() / 2 - P.wPos - P.wD / 2;
 }
 
-// 经典款：轮廓 = 贴合腕托的等距底部曲线 + 左右非对称腰线 + 饱满顶部
+/* ---- 经典款上半轮廓的贝塞尔锚点 ----------------------------------------
+   锚点为该轮廓的唯一真值。两端 pin 锚点由腕托足迹决定（不可拖），
+   其余锚点自由编辑。烘焙只在「尚无锚点」或「腕托接缝已移动」时发生，
+   因此用户拖出的形状不会被后续 rebuild 覆盖。                          */
+
+// 由足迹接缝与顶部距离生成初始锚点：左接缝 → 左腰 → 左肩 → 顶 → 右肩 → 右腰 → 右接缝
+function bakeClassicCtrl(pBL, pBR, dBLv, dBRv, topY) {
+  const halfW = P.padW / 2;
+  const yBL = pBL.y, yBR = pBR.y;
+  const spanL = topY - yBL, spanR = topY - yBR;
+  // 切线长度取相邻锚点间距的经验比例，保证初始形状即平滑饱满
+  const mk = (x, y) => ({ x, y, h1: { x, y }, h2: { x, y } });
+  const pts = [
+    { ...mk(pBL.x, yBL), pin: true },
+    mk(-halfW * 0.985, yBL + spanL * 0.34),          // 左腰
+    mk(-halfW * 0.90, yBL + spanL * 0.72),           // 左肩
+    mk(-halfW * 0.06, topY),                          // 顶（略偏左，符合人机工程）
+    mk(halfW * 0.88, yBR + spanR * 0.70),            // 右肩
+    mk(halfW * 0.97, yBR + spanR * 0.32),            // 右腰
+    { ...mk(pBR.x, yBR), pin: true },
+  ];
+  // 端点切线继承足迹方向（G1 衔接），中间锚点按相邻点方向取对称切线
+  autoSmoothClassicCtrl(pts);
+  const n = pts.length - 1;
+  const t0 = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) * 0.42;
+  pts[0].h2 = { x: pts[0].x - dBLv.x * t0, y: pts[0].y - dBLv.y * t0 };
+  const tN = Math.hypot(pts[n - 1].x - pts[n].x, pts[n - 1].y - pts[n].y) * 0.42;
+  pts[n].h1 = { x: pts[n].x - dBRv.x * tN, y: pts[n].y - dBRv.y * tN };
+  return pts;
+}
+
+// 按 Catmull-Rom 切线为每个中间锚点生成一对共线手柄 → 初始曲线自动平滑
+function autoSmoothClassicCtrl(pts) {
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const a = pts[i - 1] || p, b = pts[i + 1] || p;
+    const tx = (b.x - a.x) * 0.5, ty = (b.y - a.y) * 0.5;
+    const dPrev = Math.hypot(p.x - a.x, p.y - a.y);
+    const dNext = Math.hypot(b.x - p.x, b.y - p.y);
+    const L = Math.hypot(tx, ty) || 1;
+    const k1 = Math.min(dPrev * 0.42, L) / L;
+    const k2 = Math.min(dNext * 0.42, L) / L;
+    p.h1 = { x: p.x - tx * k1, y: p.y - ty * k1 };
+    p.h2 = { x: p.x + tx * k2, y: p.y + ty * k2 };
+  }
+}
+
+// 取得当前锚点；pin 锚点始终跟随腕托足迹，其余保持用户编辑结果
+function ensureClassicCtrl(pBL, pBR, dBLv, dBRv, topY) {
+  let c = P.classicCtrl;
+  const stale = !Array.isArray(c) || c.length < 3
+    || !c[0] || !c[c.length - 1]
+    || c.some(p => !p || !p.h1 || !p.h2
+        || !Number.isFinite(p.x) || !Number.isFinite(p.y));
+  if (stale) {
+    P.classicCtrl = bakeClassicCtrl(pBL, pBR, dBLv, dBRv, topY);
+    return P.classicCtrl;
+  }
+  // 腕托尺寸/位置变化时，仅平移两端 pin 锚点并重算其切线，中间锚点不动
+  const first = c[0], last = c[c.length - 1];
+  const moveEnd = (p, target, dir, neighbor, isFirst) => {
+    if (Math.abs(p.x - target.x) < 1e-6 && Math.abs(p.y - target.y) < 1e-6) return;
+    p.x = target.x; p.y = target.y;
+    const t = Math.hypot(neighbor.x - p.x, neighbor.y - p.y) * 0.42;
+    const h = { x: p.x - dir.x * t, y: p.y - dir.y * t };
+    if (isFirst) p.h2 = h; else p.h1 = h;
+  };
+  moveEnd(first, pBL, dBLv, c[1], true);
+  moveEnd(last, pBR, dBRv, c[c.length - 2], false);
+  first.pin = last.pin = true;
+  return c;
+}
+
+// 经典款：轮廓 = 贴合腕托的等距底部曲线 + 平滑侧边/顶部
 // 底部严格沿腕托的肾形/双球变形几何外扩 wMargin（原样折线，保留球间凹槽）；
-// 侧边与顶部用全局 G1 连续的 Hermite 链（双圆弧穹顶 + 切线连续侧边），无折角
-function makeHugShape() {
+// 侧边与顶部由一条经过「腰点—肩点—顶点」控制点的向心 Catmull-Rom 样条生成，
+// 端点切线与底部足迹衔接（G1 连续），整体曲率平缓、无折角
+function makeClassicShape() {
   const M = P.wMargin;
-  const zBase = P.padH / 2 - P.wPos - P.wD / 2;
+  // 阶段一：在「腕托中心为原点」的局部坐标系内计算足迹（zBase=0），
+  // 足迹完成后由腕托顶 + wristTopGap 推出总长，再整体平移到最终坐标系。
+  const zBase = 0;
 
   const bottomPts = [];
   const BSTEPS = 100;
@@ -375,12 +483,11 @@ function makeHugShape() {
         const xr = c * xu + s * zu, zr = -s * xu + c * zu;
         raw.push({ x: ox + xr * sx, z: zr * sz });
       }
-    } else { // none：与鼠标垫自身椭圆底边一致的足迹
-      const rx = P.padW / 2, ry = P.padW * 0.25, cz = P.padH / 2 - ry;
+    } else { // none：无腕托时用一段扁椭圆作为底边足迹（局部坐标，中心在原点）
+      const rx = P.padW / 2, ry = P.padW * 0.25;
       for (let i = 0; i <= BSTEPS; i++) {
         const t = (i / BSTEPS) * Math.PI;
-        // 抵消 offsetFootprint 的 zBase，使最终 y = -(cz + sin·ry)
-        raw.push({ x: Math.cos(t) * rx, z: (cz + Math.sin(t) * ry) - zBase });
+        raw.push({ x: Math.cos(t) * rx, z: Math.sin(t) * ry });
       }
     }
     return raw;
@@ -520,146 +627,65 @@ function makeHugShape() {
     offsetFootprint(wristFootprint('none'), true);
   }
 
+  // 阶段二：由腕托足迹推算总长，并把足迹平移到最终坐标系（原点=垫身中心）。
+  // 局部坐标下 bottomPts.y = -(足迹 z)，故足迹最靠顶部处 y 最小、最靠底边处 y 最大。
+  let yMinL = Infinity, yMaxL = -Infinity;
+  for (const p of bottomPts) {
+    if (p.y < yMinL) yMinL = p.y;
+    if (p.y > yMaxL) yMaxL = p.y;
+  }
+  const gapTop = Math.max(1, P.wristTopGap);
+  const padH = (yMaxL + P.wPos) - (yMinL - gapTop);
+  classicPadHCache = padH;
+  // 平移：腕托最底端到底边保留 wPos 的距离
+  const dy = (-padH / 2 + P.wPos) - yMaxL;
+  // 导出腕托中心的 z 基准，供腕托实体摆放复用，确保与轮廓严格同源
+  classicZBaseCache = -dy;
+  for (const p of bottomPts) p.y += dy;
+
   const pBR = bottomPts[0];
   const pBL = bottomPts[bottomPts.length - 1];
 
-  const topY_s = P.padH / 2;
-  const asym = P.topAsym;
+  const topY = padH / 2;
 
-  const ltW = (P.padW / 2) * (1 + asym * 0.35);
-  const ltY = topY_s * (0.35 + asym * 0.15) * (0.75 + P.topRound * 0.32);
-  const pTL = { x: -ltW, y: ltY };
-
-  const rtW = (P.padW / 2) * (1 - asym * 0.12);
-  const rtY = topY_s * (0.3 - asym * 0.08) * (0.72 + P.topRound * 0.36);
-  const pTR = { x: rtW, y: rtY };
-
-  const pTop = { x: -padTopOff(asym), y: topY_s };
-
-  // 穹顶：左右两条圆弧在顶点相接，圆心均位于顶点正下方
-  // → 两弧精确过各自肩点，且顶点处切线严格水平（G1 拼接）
-  // 弧线向肩下延伸（topRound），侧边曲线直接汇入延伸点，过渡更流畅
-  const cx = pTop.x, ty0 = pTop.y;
-  const uL = pTL.x - cx, uR = pTR.x - cx;
-  const ycL = (ty0 * ty0 - uL * uL - pTL.y * pTL.y) / (2 * (ty0 - pTL.y));
-  const ycR = (ty0 * ty0 - uR * uR - pTR.y * pTR.y) / (2 * (ty0 - pTR.y));
-  const RL = Math.hypot(uL, pTL.y - ycL), RR = Math.hypot(uR, pTR.y - ycR);
-  const phiL = Math.atan2(pTL.y - ycL, uL);              // ∈ (π/2, π]
-  const phiR = Math.atan2(pTR.y - ycR, uR);              // ∈ [0, π/2)
-  const ext = Math.min(0.5, Math.max(0.03, (P.topRound - 0.4) / 1.6 * 0.47 + 0.03));
-  const yMin = ty0 * 0.12;
-  const sLmin = Math.min(0.999, Math.max(-0.999, (yMin - ycL) / (RL || 1)));
-  const sRmin = Math.min(0.999, Math.max(-0.999, (yMin - ycR) / (RR || 1)));
-  // 弧角钳制在有效区间：(π/2, π] 与 [0, π/2)，保证左右弧顺序正确
-  const aL = Math.max(Math.PI / 2 + 0.02,
-    Math.min(Math.PI - Math.asin(sLmin) - 0.01, phiL + ext));
-  const aR = Math.min(Math.PI / 2 - 0.02,
-    Math.max(Math.asin(sRmin) + 0.01, phiR - ext));
-  const jL = { x: cx + RL * Math.cos(aL), y: ycL + RL * Math.sin(aL) };
-  const jR = { x: cx + RR * Math.cos(aR), y: ycR + RR * Math.sin(aR) };
-
-  // 腰线锚点（高度钳制在底缘与肩点之间，防止极端滑条产生折叠）
-  const lBaseW = rawEdgeL != null ? Math.abs(rawEdgeL) : Math.abs(pBL.x);
-  const rBaseW = rawEdgeR != null ? Math.abs(rawEdgeR) : Math.abs(pBR.x);
-  const pWL = {
-    x: -(lBaseW + (Math.abs(pTL.x) - lBaseW) * (1 - P.waistLDepth)),
-    y: Math.min(jL.y - 10, Math.max(pBL.y + 10,
-        pBL.y + (jL.y - pBL.y) * P.waistLPos)),
-  };
-  const pWR = {
-    x: rBaseW + (Math.abs(pTR.x) - rBaseW) * (1 - P.waistRDepth),
-    y: Math.min(jR.y - 10, Math.max(pBR.y + 10,
-        pBR.y + (jR.y - pBR.y) * P.waistRPos)),
-  };
-
-  // 腰点切线引导点：沿通行方向前后各取一点，摊薄曲率反转（不改变轮廓位置）
-  const dWL = norm2(jL.x - pBL.x, jL.y - pBL.y);
-  const dWR = norm2(jR.x - pBR.x, jR.y - pBR.y);
-  const gL = Math.min(12, 0.4 * Math.min(Math.hypot(pWL.x - pBL.x, pWL.y - pBL.y),
-                                          Math.hypot(jL.x - pWL.x, jL.y - pWL.y)));
-  const gR = Math.min(12, 0.4 * Math.min(Math.hypot(pWR.x - pBR.x, pWR.y - pBR.y),
-                                          Math.hypot(jR.x - pWR.x, jR.y - pWR.y)));
-  const pWLb = { x: pWL.x - dWL.x * gL, y: pWL.y - dWL.y * gL };
-  const pWLa = { x: pWL.x + dWL.x * gL, y: pWL.y + dWL.y * gL };
-  const pWRb = { x: pWR.x - dWR.x * gR, y: pWR.y - dWR.y * gR };
-  const pWRa = { x: pWR.x + dWR.x * gR, y: pWR.y + dWR.y * gR };
-
-  // 侧边+穹顶锚点链（底部足迹不参与平滑，末尾原样拼接）
-  const ND = 18;
-  const chain = [pBL, pWLb, pWL, pWLa, jL];
-  for (let i = 1; i <= ND; i++) {
-    const ang = aL + (Math.PI / 2 - aL) * (i / ND);
-    chain.push({ x: cx + RL * Math.cos(ang), y: ycL + RL * Math.sin(ang) });
-  }
-  for (let i = 1; i <= ND; i++) {
-    const ang = Math.PI / 2 + (aR - Math.PI / 2) * (i / ND);
-    chain.push({ x: cx + RR * Math.cos(ang), y: ycR + RR * Math.sin(ang) });
-  }
-  chain.push(pWRa, pWR, pWRb, pBR);
-
-  // ---- Hermite 链采样：节点切线由相邻锚点推算（G1 连续，无折角）；
-  // 疏密悬殊的节点（链↔弧线衔接）切线取致密侧方向、长侧幅值，把转弯摊入长段 ----
-  const wr = P.waistRound;                    // 腰窝弧线圆润度 → 切线张力
+  // 底部足迹两端切线：贝塞尔端点手柄沿此方向，保证与足迹 G1 衔接
   const dBLv = norm2(pBL.x - bottomPts[bottomPts.length - 2].x,
                      pBL.y - bottomPts[bottomPts.length - 2].y);
   const dBRv = norm2(bottomPts[1].x - pBR.x, bottomPts[1].y - pBR.y);
-  function crTangent(i) {
-    const cur = chain[i];
-    let vx, vy;
-    if (i === 0) { vx = dBLv.x; vy = dBLv.y; }
-    else if (i === chain.length - 1) { vx = dBRv.x; vy = dBRv.y; }
-    else {
-      const prev = chain[i - 1], next = chain[i + 1];
-      const dPrev = Math.hypot(cur.x - prev.x, cur.y - prev.y) || 1;
-      const dNext = Math.hypot(next.x - cur.x, next.y - cur.y) || 1;
-      if (dNext < dPrev * 0.25) { vx = next.x - cur.x; vy = next.y - cur.y; }
-      else if (dPrev < dNext * 0.25) { vx = cur.x - prev.x; vy = cur.y - prev.y; }
-      else { vx = next.x - prev.x; vy = next.y - prev.y; }
-    }
-    const vl = Math.hypot(vx, vy) || 1;
-    let mag;
-    if (i === 0 || i === chain.length - 1) mag = 24;
-    else {
-      const prev = chain[i - 1], next = chain[i + 1];
-      const dPrev = Math.hypot(cur.x - prev.x, cur.y - prev.y) || 1;
-      const dNext = Math.hypot(next.x - cur.x, next.y - cur.y) || 1;
-      mag = (dNext < dPrev * 0.25 || dPrev < dNext * 0.25)
-        ? Math.max(dPrev, dNext) / 0.8
-        : Math.max(dPrev, dNext) / 3;
-    }
-    const tens = 0.7 + wr * 0.6;
-    return { x: vx / vl * mag * tens, y: vy / vl * mag * tens };
-  }
 
-  // 采样整条轮廓（侧边+穹顶 Hermite 链 + 底部足迹折线）
-  const outlinePts = [{ x: chain[0].x, y: chain[0].y }];
-  const emit = (x, y) => outlinePts.push({ x, y });
-  for (let i = 0; i < chain.length - 1; i++) {
-    const P0 = chain[i], P1 = chain[i + 1];
-    const m0 = crTangent(i), m1 = crTangent(i + 1);
-    const ch = Math.hypot(P1.x - P0.x, P1.y - P0.y) || 1;
-    const cap = ch * 2.4;
-    const l0 = Math.hypot(m0.x, m0.y), l1 = Math.hypot(m1.x, m1.y);
-    if (l0 > cap) { m0.x *= cap / l0; m0.y *= cap / l0; }
-    if (l1 > cap) { m1.x *= cap / l1; m1.y *= cap / l1; }
-    const c0 = { x: P0.x + m0.x / 3, y: P0.y + m0.y / 3 };
-    const c1 = { x: P1.x - m1.x / 3, y: P1.y - m1.y / 3 };
-    const N = Math.min(60, Math.max(8, Math.ceil(ch / 2)));
-    for (let j = 1; j <= N; j++) {
-      const t = j / N, u = 1 - t;
-      emit(
-        u*u*u*P0.x + 3*u*u*t*c0.x + 3*u*t*t*c1.x + t*t*t*P1.x,
-        u*u*u*P0.y + 3*u*u*t*c0.y + 3*u*t*t*c1.y + t*t*t*P1.y
-      );
+  // ── 上半轮廓：三次贝塞尔锚点链 ──────────────────────────────────────────
+  // 两端锚点（pin）钉在底部足迹接缝处，切线继承足迹方向以保证 G1 衔接；
+  // 中间锚点自由可拖，形状完全由锚点与切线手柄决定（不再有顶部/腰部标量参数）。
+  // 首次使用或腕托尺寸变化导致 pin 失配时，由 bakeClassicCtrl() 生成初始锚点。
+  const ctrl = ensureClassicCtrl(pBL, pBR, dBLv, dBRv, topY);
+
+  // 采样贝塞尔链：每段按弦长自适应细分，保证曲率大处足够密
+  const outlinePts = [];
+  for (let i = 0; i < ctrl.length - 1; i++) {
+    const a = ctrl[i], b = ctrl[i + 1];
+    const p0 = a, p1 = a.h2, p2 = b.h1, p3 = b;
+    const chord = Math.hypot(p3.x - p0.x, p3.y - p0.y)
+                + Math.hypot(p1.x - p0.x, p1.y - p0.y)
+                + Math.hypot(p2.x - p1.x, p2.y - p1.y)
+                + Math.hypot(p3.x - p2.x, p3.y - p2.y);
+    const seg = Math.max(8, Math.min(64, Math.round(chord / 4)));
+    for (let j = (i === 0 ? 0 : 1); j <= seg; j++) {
+      const t = j / seg, u = 1 - t;
+      outlinePts.push({
+        x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x,
+        y: u*u*u*p0.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*p3.y,
+      });
     }
   }
 
   // 底部腕托包裹足迹：原样折线（保留球间凹槽特征）
-  for (let i = 1; i < bottomPts.length - 1; i++) emit(bottomPts[i].x, bottomPts[i].y);
+  const footStart = outlinePts.length;
+  for (let i = 1; i < bottomPts.length - 1; i++) outlinePts.push(bottomPts[i]);
 
-  // 轻量拉普拉斯平滑收尾：压平残余微转折；凹槽区域保持锐利，端点不动
+  // 轻量拉普拉斯平滑：仅作用于足迹折线段，压平其残余锯齿。
+  // 贝塞尔段是精确曲线，不参与平滑，否则会抹掉用户拖出的形状。
   for (let pass = 0; pass < 2; pass++) {
-    for (let i = 1; i < outlinePts.length - 1; i++) {
+    for (let i = footStart; i < outlinePts.length - 1; i++) {
       const p = outlinePts[i];
       if (p.y < -55 && Math.abs(p.x) < 70) continue;   // 球间凹槽区不平滑
       const a = outlinePts[i - 1], b = outlinePts[i + 1];
@@ -678,7 +704,7 @@ function makeHugShape() {
 function makeShape() {
   const w = P.padW / 2, h = P.padH / 2;
   const s = new THREE.Shape();
-  if (P.shape === 'hug') return makeHugShape();
+  if (P.shape === 'classic') return makeClassicShape();
   if (P.shape === 'ellipse') {
     s.absellipse(0, 0, w, h, 0, Math.PI * 2);
     return s;
@@ -700,7 +726,7 @@ function makeShape() {
 }
 
 // 世界坐标平面投影 UV：X/Z 用同一尺度，保证贴图渲染长宽比不随外形参数变化（cover 模式）
-function uvScale() { return Math.max(P.padW, P.padH); }
+function uvScale() { return Math.max(P.padW, padHeight()); }
 function planarUV(geo) {
   const S = uvScale();
   const pos = geo.attributes.position;
@@ -785,7 +811,7 @@ function buildPad() {
   }
   const geo = new THREE.ExtrudeGeometry(makeShape(), {
     depth: P.thick,
-    bevelEnabled: true,
+    bevelEnabled: P.bevel > 0,   // 编辑轮廓时也保留真实倒角立体感（顶面边界仍与 shape 1:1 重合）
     bevelThickness: P.bevel,
     bevelSize: P.bevel * 0.9,
     bevelSegments: 5,
@@ -851,6 +877,7 @@ function buildWrist(topY) {
     wristGroup.children.forEach(c => c.geometry.dispose());
   }
   wristGroup = new THREE.Group();
+  wristGroup.visible = true;   // 编辑模式下也显示腕托，以呈现真实渲染状况（覆盖层在 DOM 顶层，仍可拖拽）
   if (P.wristStyle !== 'none') {
     if (wristMat) wristMat.dispose();
     // 裁剪掉低于鼠标垫下表面的部分
@@ -870,7 +897,7 @@ function buildWrist(topY) {
       wristGroup.add(m);
       return m;
     };
-    const zBase = P.padH / 2 - P.wPos - P.wD / 2;
+    const zBase = wristZBase();
     if (P.wristStyle === 'full') {
       const m = mk(P.wW / 2, P.wD / 2, 0, zBase);
       deformKidney(m.geometry, P.wMorph, P.wMorphRot);
@@ -902,6 +929,7 @@ function buildWrist(topY) {
 function rebuild() {
   const topY = buildPad();
   buildWrist(topY);
+  if (curveEdit) setEditOrtho();   // 几何/尺寸变了，正交视口要跟着缩放
 }
 
 /* ================= 光照 ================= */
@@ -967,6 +995,16 @@ function checkRow(parent, label, get, set) {
   const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = get();
   inp.onchange = () => set(inp.checked);
   row.append(lb, inp); parent.appendChild(row);
+  return inp;
+}
+function btnRow(parent, label, text, onClick) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const b = document.createElement('button'); b.textContent = text;
+  b.style.cssText = 'flex:1;padding:5px 10px;border:0;border-radius:5px;background:#3a4150;color:#e6e9ef;cursor:pointer';
+  b.onclick = onClick;
+  row.append(lb, b); parent.appendChild(row);
+  return b;
 }
 
 /* --- 贴图变换控件 --- */
@@ -1000,23 +1038,27 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
 /* --- 外形 --- */
 {
   const el = document.getElementById('shapeCtrls');
-  selectRow(el, '轮廓', [['rect','圆角矩形'],['ellipse','椭圆'],['stadium','胶囊形'],['hug','经典']],
+  selectRow(el, '轮廓', [['rect','圆角矩形'],['ellipse','椭圆'],['stadium','胶囊形'],['classic','经典']],
     () => P.shape, v => { P.shape = v; rebuild(); refreshShapeUI(); });
-  slider(el, '宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); });
-  slider(el, '长度', 150, 340, 1, () => P.padH, v => { P.padH = v; rebuild(); });
+  slider(el, '宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); if (curveEdit) setEditOrtho(); });
+  // 经典款的长度由「腕托顶距」派生，故该滑条仅在其余轮廓下显示
+  const nonClassicRows = [
+    slider(el, '长度', 150, 340, 1, () => P.padH, v => { P.padH = v; rebuild(); }),
+  ];
   slider(el, '圆角', 0, 110, 1, () => P.corner, v => { P.corner = v; rebuild(); });
-  const hugRows = [
-    slider(el, '顶部弧度', 0.4, 2, 0.01, () => P.topRound, v => { P.topRound = v; rebuild(); }),
-    slider(el, '顶部偏心', -0.5, 0.5, 0.01, () => P.topAsym, v => { P.topAsym = v; rebuild(); }),
-    slider(el, '外形超出腕托', 0, 10, 0.01, () => P.wMargin, v => { P.wMargin = v; rebuild(); }),
-    slider(el, '左腰凹深', 0, 2.5, 0.01, () => P.waistLDepth, v => { P.waistLDepth = v; rebuild(); }),
-    slider(el, '左腰位置', 0.1, 0.9, 0.01, () => P.waistLPos, v => { P.waistLPos = v; rebuild(); }),
-    slider(el, '右腰凹深', 0, 2.5, 0.01, () => P.waistRDepth, v => { P.waistRDepth = v; rebuild(); }),
-    slider(el, '右腰位置', 0.1, 0.9, 0.01, () => P.waistRPos, v => { P.waistRPos = v; rebuild(); }),
-    slider(el, '腰窝圆润度', 0, 1, 0.01, () => P.waistRound, v => { P.waistRound = v; rebuild(); }),
+  // 经典款：上半轮廓由贝塞尔锚点决定，仅保留驱动足迹与总长的两个参数。
+  // 拖动这两个滑条只平移两端 pin 锚点，用户拖出的形状不会被重置。
+  const classicRows = [
+    slider(el, '腕托顶距', 40, 240, 1, () => P.wristTopGap, v => { P.wristTopGap = v; rebuild(); if (curveEdit) setEditOrtho(); }),
+    slider(el, '外形超出腕托', 0, 10, 0.01, () => P.wMargin, v => { P.wMargin = v; rebuild(); if (curveEdit) setEditOrtho(); }),
+    checkRow(el, '编辑轮廓（拖拽贝塞尔控制点）', () => curveEdit, v => setCurveEdit(v)),
+    btnRow(el, '轮廓锚点', '重置为默认形状', () => { P.classicCtrl = null; rebuild(); drawCurveOverlay(); }),
   ];
   window.refreshShapeUI = () => {
-    hugRows.forEach(r => r.closest('.row').style.display = P.shape === 'hug' ? '' : 'none');
+    const isClassic = P.shape === 'classic';
+    classicRows.forEach(r => r.closest('.row').style.display = isClassic ? '' : 'none');
+    nonClassicRows.forEach(r => r.closest('.row').style.display = isClassic ? 'none' : '');
+    if (!isClassic && curveEdit) setCurveEdit(false);
   };
   refreshShapeUI();
   slider(el, '厚度', 2, 14, 0.5, () => P.thick, v => { P.thick = v; rebuild(); });
@@ -1251,6 +1293,457 @@ viewSeg.querySelectorAll('button').forEach(b => {
   };
 });
 
+/* ================= 轮廓贝塞尔编辑 ================= */
+/* 叠加层直接在预览画面上绘制并拖拽控制点。为避免透视畸变导致拖拽偏移，
+   进入编辑时自动切到顶视；模型 XZ 平面与屏幕的映射由相机投影反算得到。   */
+const curveLayer = document.getElementById('curveLayer');
+const cctx = curveLayer.getContext('2d');
+var curveEdit = false;       // var：UI 构建早于本模块，需避免 TDZ
+let cvHover = null;          // {i, kind:'anchor'|'h1'|'h2'}
+let cvDrag = null;
+let prevViewPos = null;      // 进入编辑前的相机状态，退出时恢复
+let lastCamKey = '';         // 相机位姿指纹，用于按需重绘叠加层
+
+// 编辑态专用正交相机：根据 stage 当前宽高 + 鼠标垫世界包围计算 left/right/top/bottom，
+// 让 Shape 坐标→屏幕坐标严格 1:1 映射，避免 Perspective 投影 + 退化 lookAt 带来的对位误差。
+// up = (0, 0, -1) 使世界 -Z (即 Shape +Y) 投影到屏幕 +Y，腕托接缝在屏幕下沿，与默认透视视角一致。
+function buildOrtho() {
+  orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -2000, 2000);
+  orthoCam.up.set(0, 0, -1);
+  orthoCam.position.set(0, 600, 0);
+  orthoCam.lookAt(0, 0, 0);
+  orthoCam.updateMatrixWorld(true);
+}
+
+function setEditOrtho() {
+  if (!orthoCam) buildOrtho();
+  // 用 makeClassicShape() 实际边界做正交视锥，使视锥中心对齐模型几何中心，
+  // 视锥严格覆盖 shape bbox：长边等于 shape 对应方向半幅，短边方向按 stage aspect 反推（可能留白），
+  // 视锥中心 = shape 几何中心。这样 mouse pad 居中显示，蓝线与 3D 模型像素级重合。
+  const w = stage.clientWidth, h = stage.clientHeight;
+  let cx = 0, cy = 0, halfX = 120, halfY = 120;
+  try {
+    const sh = makeClassicShape();
+    const pts = sh.getPoints ? sh.getPoints(400) : [];
+    if (pts.length) {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const p of pts) {
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      }
+      cx = (minX + maxX) / 2;
+      cy = (minY + maxY) / 2;
+      halfX = (maxX - minX) / 2;
+      halfY = (maxY - minY) / 2;
+    }
+  } catch (e) {}
+  const aspect = w / h;
+  // 取较大的那半幅作为视锥短边方向半幅（保证不裁剪），长边方向由 stage aspect 反推
+  const baseHalf = Math.max(halfX, halfY);
+  if (aspect >= 1) {
+    orthoCam.top = cy + baseHalf;
+    orthoCam.bottom = cy - baseHalf;
+    orthoCam.left = cx - baseHalf * aspect;
+    orthoCam.right = cx + baseHalf * aspect;
+  } else {
+    orthoCam.left = cx - baseHalf;
+    orthoCam.right = cx + baseHalf;
+    orthoCam.top = cy + baseHalf / aspect;
+    orthoCam.bottom = cy - baseHalf / aspect;
+  }
+  orthoCam.updateProjectionMatrix();
+  orthoCam.updateMatrixWorld(true);
+}
+
+function setCurveEdit(on) {
+  curveEdit = on && P.shape === 'classic';
+  curveLayer.classList.toggle('on', curveEdit);
+  // 编辑模式下隐藏腕托 cushion：它会完全遮住 padMesh 顶面，让用户看不到鼠标垫真实外形
+  if (wristGroup) wristGroup.visible = true;
+  // 先设置 flag 再 rebuild，使 buildPad() 根据 curveEdit 决定是否启用 bevel
+  if (curveEdit) {
+    prevViewPos = { pos: camera.position.clone(), tgt: controls.target.clone() };
+    controls.enabled = false;
+    setDragMode('view');
+    modeHint.textContent = '编辑轮廓：拖圆点=移动锚点  拖方块=调切线  Shift=切线独立  双击=加点  右键=删点';
+    modeHint.style.display = 'block';
+    setEditOrtho();
+    resizeCurveLayer();
+    drawCurveOverlay();
+  } else {
+    if (prevViewPos) {
+      camera.position.copy(prevViewPos.pos);
+      controls.target.copy(prevViewPos.tgt);
+      prevViewPos = null;
+    }
+    controls.enabled = true;
+    modeHint.style.display = 'none';
+    cvHover = cvDrag = null;
+  }
+  // 同步复选框显示状态
+  document.querySelectorAll('#shapeCtrls input[type=checkbox]').forEach(cb => {
+    if (cb.parentElement.textContent.includes('编辑轮廓')) cb.checked = curveEdit;
+  });
+  // 进入/退出编辑时重建网格：进入时关 bevel 让覆盖层与网格严格对齐；退出时恢复 bevel
+  rebuild();
+}
+
+function resizeCurveLayer() {
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  curveLayer.width = stage.clientWidth * dpr;
+  curveLayer.height = stage.clientHeight * dpr;
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+// 模型形状坐标 (x, y) → 屏幕像素。
+// Shape 在 XY 平面内被构造后由 geo.rotateX(-π/2) 放到世界 XZ 平面：
+// 旋转矩阵 [x, y, z] → [x, z, -y]，故 Shape-Y 映射到世界 -Z。
+// 编辑态下使用独立正交相机（orthoCam，up = world -Z），与 3D 渲染严格同源。
+// 编辑模式下 ExtrudeGeometry 的 bevelEnabled=false（见 buildPad），
+// 渲染顶面位于世界 Y = P.thick/2，与 makeShape() 边界严格重合，故投影取此值。
+// 开启 bevel 后 ExtrudeGeometry 顶面位于世界 Y = P.thick/2 + P.bevel，
+// 投影取此值才能使蓝色轮廓与渲染网格严格 1:1 重合。
+const shapeTopY = () => P.thick / 2 + P.bevel;
+function shapeToScreen(x, y) {
+  const cam = orthoCam || camera;
+  const v = new THREE.Vector3(x, shapeTopY(), -y).project(cam);
+  return { x: (v.x * 0.5 + 0.5) * stage.clientWidth,
+           y: (-v.y * 0.5 + 0.5) * stage.clientHeight };
+}
+// 屏幕像素 → 模型形状坐标（射线与顶面平面求交）
+function screenToShape(e) {
+  const r = curveLayer.getBoundingClientRect();
+  const nx = ((e.clientX - r.left) / r.width) * 2 - 1;
+  const ny = -((e.clientY - r.top) / r.height) * 2 + 1;
+  const cam = orthoCam || camera;
+  raycaster.setFromCamera(new THREE.Vector2(nx, ny), cam);
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -shapeTopY());
+  const pt = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(plane, pt)) return null;
+  let x = pt.x, y = -pt.z;
+  return { x, y };
+}
+
+function drawCurveOverlay() {
+  if (!curveEdit) return;
+  const c = P.classicCtrl;
+  cctx.clearRect(0, 0, stage.clientWidth, stage.clientHeight);
+  if (!Array.isArray(c) || !c.length) return;
+
+  // 主轮廓（蓝）：从 padMesh.geometry 顶面（y ≈ P.thick/2）提取边界边，
+  // 按三角形邻接走成闭合路径，逐点 project(orthoCam) 投屏。
+  // 这与 renderer.render 走完全相同的顶点+投影路径，从根本上消除任何差异；
+  // 也避免 makeClassicShape().getPoints(400) 采样折线感与 3D 圆滑外形视觉不一致。
+  try {
+    const geo = padMesh && padMesh.geometry;
+    const pos = geo && geo.attributes && geo.attributes.position;
+    const idx = geo && geo.index;
+    if (pos && pos.count > 4) {
+      const topY = P.thick / 2;
+      const tol = 0.05;
+      const w = stage.clientWidth, h = stage.clientHeight;
+      const v = new THREE.Vector3();
+      // 1) 找顶面三角形（3 个顶点都 y ≈ topY）
+      const triIndices = [];
+      const useIdx = idx ? idx.array : null;
+      const N = useIdx ? useIdx.length : pos.count;
+      const get = (i) => useIdx ? useIdx[i] : i;
+      for (let i = 0; i < N; i += 3) {
+        const a = get(i), b = get(i + 1), c = get(i + 2);
+        const ya = pos.getY(a), yb = pos.getY(b), yc = pos.getY(c);
+        if (Math.abs(ya - topY) <= tol && Math.abs(yb - topY) <= tol && Math.abs(yc - topY) <= tol) {
+          triIndices.push([a, b, c]);
+        }
+      }
+      if (triIndices.length > 0) {
+        // 2) 合并重复顶点（容差内）
+        const mergeTol = 0.5;
+        const merged = []; // [{x,z}]
+        const remap = new Int32Array(pos.count);
+        for (let i = 0; i < pos.count; i++) {
+          const x = pos.getX(i), z = pos.getZ(i);
+          let found = -1;
+          for (let j = 0; j < merged.length; j++) {
+            if (Math.abs(merged[j].x - x) < mergeTol && Math.abs(merged[j].z - z) < mergeTol) {
+              found = j; break;
+            }
+          }
+          if (found < 0) { merged.push({ x, z }); found = merged.length - 1; }
+          remap[i] = found;
+        }
+        // 3) 三角形 → 边使用计数
+        const edges = new Map(); // key: "min*1e7+max" → count
+        const edgeList = []; // [{a, b, count}]
+        for (const [a, b, c] of triIndices) {
+          const A = remap[a], B = remap[b], C = remap[c];
+          for (const [u, v] of [[A, B], [B, C], [C, A]]) {
+            if (u === v) continue;
+            const lo = Math.min(u, v), hi = Math.max(u, v);
+            const key = lo * 100000 + hi;
+            const e = edges.get(key);
+            if (e) e.count++;
+            else edges.set(key, { a: u, b: v, count: 1 });
+          }
+        }
+        // 4) 边界边（count === 1）= 顶面外轮廓
+        const boundaryEdges = [];
+        for (const e of edges.values()) if (e.count === 1) boundaryEdges.push([e.a, e.b]);
+        if (boundaryEdges.length >= 3) {
+          // 5) 建邻接表（无向）
+          const adj = merged.map(() => []);
+          boundaryEdges.forEach(([a, b], ei) => { adj[a].push({ n: b, e: ei }); adj[b].push({ n: a, e: ei }); });
+          // 6) 从最左侧顶点出发，沿边界边遍历（已访问的边不再走），直到回到起点
+          let start = 0;
+          for (let i = 1; i < merged.length; i++) if (merged[i].x < merged[start].x) start = i;
+          const usedEdge = new Set();
+          const path = [start];
+          let cur = start;
+          for (let step = 0; step < boundaryEdges.length; step++) {
+            let next = null;
+            for (const { n, e } of adj[cur]) {
+              if (usedEdge.has(e)) continue;
+              next = { n, e }; break;
+            }
+            if (!next) break;
+            usedEdge.add(next.e);
+            if (next.n === start) { path.push(start); break; }
+            path.push(next.n);
+            cur = next.n;
+          }
+          if (path.length >= 3) {
+            cctx.beginPath();
+            path.forEach((idx2, i) => {
+              const vv = new THREE.Vector3(merged[idx2].x, topY, merged[idx2].z).project(orthoCam);
+              const sx = (vv.x * 0.5 + 0.5) * w;
+              const sy = (-vv.y * 0.5 + 0.5) * h;
+              if (i === 0) cctx.moveTo(sx, sy); else cctx.lineTo(sx, sy);
+            });
+            cctx.closePath();
+            cctx.strokeStyle = '#4da3ff'; cctx.lineWidth = 2; cctx.stroke();
+          }
+        }
+      }
+    }
+  } catch (e) {}
+
+  // 手柄连线与控制点
+  c.forEach((p, i) => {
+    const a = shapeToScreen(p.x, p.y);
+    if (!p.pin) {
+      ['h1', 'h2'].forEach(k => {
+        const h = shapeToScreen(p[k].x, p[k].y);
+        cctx.beginPath(); cctx.moveTo(a.x, a.y); cctx.lineTo(h.x, h.y);
+        cctx.strokeStyle = '#6b7480'; cctx.lineWidth = 1; cctx.stroke();
+        const hot = cvHover && cvHover.i === i && cvHover.kind === k;
+        cctx.beginPath(); cctx.rect(h.x - 5, h.y - 5, 10, 10);
+        cctx.fillStyle = hot ? '#ffd166' : '#ff7a59'; cctx.fill();
+      });
+    }
+    const hot = cvHover && cvHover.i === i && cvHover.kind === 'anchor';
+    cctx.beginPath(); cctx.arc(a.x, a.y, p.pin ? 5 : 7, 0, Math.PI * 2);
+    cctx.fillStyle = p.pin ? '#5a626e' : (hot ? '#ffd166' : '#12151a');
+    cctx.fill();
+    cctx.strokeStyle = p.pin ? '#7d8694' : '#4da3ff';
+    cctx.lineWidth = 2; cctx.stroke();
+  });
+
+  // ?diag：画两个对比框（蓝框=shapeToScreen 蓝线 bbox，红框=padMesh 顶面顶点投屏 bbox）
+  // 两框严格重合即说明数据/投影一致；偏移量即不重合根因。
+  if (location.search.includes('diag')) {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    // 蓝框
+    const sh = makeClassicShape().getPoints(400);
+    let bx0=Infinity,bx1=-Infinity,by0=Infinity,by1=-Infinity;
+    for (const p of sh){const s=shapeToScreen(p.x,p.y);if(s.x<bx0)bx0=s.x;if(s.x>bx1)bx1=s.x;if(s.y<by0)by0=s.y;if(s.y>by1)by1=s.y;}
+    cctx.strokeStyle = '#4da3ff'; cctx.lineWidth = 1;
+    cctx.strokeRect(bx0, by0, bx1-bx0, by1-by0);
+    // 红框
+    const pos = padMesh.geometry.attributes.position;
+    const topY = P.thick/2;
+    const v = new THREE.Vector3();
+    let px0=Infinity,px1=-Infinity,py0=Infinity,py1=-Infinity;
+    for (let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i);if(Math.abs(v.y-topY)>0.05)continue;
+      const pr=v.clone().project(orthoCam);const sx=(pr.x*0.5+0.5)*w,sy=(-pr.y*0.5+0.5)*h;
+      if(sx<px0)px0=sx;if(sx>px1)px1=sx;if(sy<py0)py0=sy;if(sy>py1)py1=sy;}
+    cctx.strokeStyle = '#ff3b6b'; cctx.lineWidth = 1;
+    cctx.strokeRect(px0, py0, px1-px0, py1-py0);
+    // 左上角文字
+    cctx.fillStyle = 'rgba(0,0,0,0.6)'; cctx.fillRect(4, 4, 320, 60);
+    cctx.fillStyle = '#4da3ff'; cctx.font = '12px monospace';
+    cctx.fillText('blue(curve): '+bx0.toFixed(0)+','+by0.toFixed(0)+'→'+bx1.toFixed(0)+','+by1.toFixed(0), 8, 20);
+    cctx.fillStyle = '#ff3b6b';
+    cctx.fillText('red(mesh): '+px0.toFixed(0)+','+py0.toFixed(0)+'→'+px1.toFixed(0)+','+py1.toFixed(0), 8, 36);
+    cctx.fillStyle = '#fff';
+    cctx.fillText('dpr:'+renderer.getPixelRatio()+' stage:'+w+'x'+h+' canvas:'+renderer.domElement.width+'x'+renderer.domElement.height, 8, 52);
+    // 顶面顶点世界坐标范围
+    let minWx=Infinity,maxWx=-Infinity;
+    for (let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i);if(Math.abs(v.y-topY)>0.05)continue;
+      if(v.x<minWx)minWx=v.x;if(v.x>maxWx)maxWx=v.x;}
+    cctx.fillStyle='#fff';cctx.fillText('topface wx: '+minWx.toFixed(1)+'→'+maxWx.toFixed(1),8,68);
+    // padMesh 顶面 NDC 范围
+    let ndcMinX=Infinity,ndcMaxX=-Infinity,ndcMinY=Infinity,ndcMaxY=-Infinity;
+    for (let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i);if(Math.abs(v.y-topY)>0.05)continue;
+      const pr=v.clone().project(orthoCam);
+      if(pr.x<ndcMinX)ndcMinX=pr.x;if(pr.x>ndcMaxX)ndcMaxX=pr.x;
+      if(pr.y<ndcMinY)ndcMinY=pr.y;if(pr.y>ndcMaxY)ndcMaxY=pr.y;}
+    cctx.fillStyle='#fff';cctx.fillText('ndc x:'+ndcMinX.toFixed(3)+'→'+ndcMaxX.toFixed(3)+' y:'+ndcMinY.toFixed(3)+'→'+ndcMaxY.toFixed(3),8,162);
+    // 调试：把内部统计打到画面（?diag 时可见）
+    if (location.search.includes('diag')) {
+      try {
+        const geo = padMesh && padMesh.geometry;
+        const pos = geo && geo.attributes && geo.attributes.position;
+        const idx = geo && geo.index;
+        const topY = P.thick/2; const tol = 0.05;
+        const useIdx = idx ? idx.array : null;
+        const N = useIdx ? useIdx.length : pos.count;
+        const get = (i) => useIdx ? useIdx[i] : i;
+        let tri=0, vx=0;
+        const seen=new Set();
+        for(let i=0;i<N;i+=3){const a=get(i),b=get(i+1),c=get(i+2);
+          const ya=pos.getY(a),yb=pos.getY(b),yc=pos.getY(c);
+          if(Math.abs(ya-topY)<=tol&&Math.abs(yb-topY)<=tol&&Math.abs(yc-topY)<=tol){
+            tri++;
+            [a,b,c].forEach(k=>seen.add(k));
+          }}
+        vx=seen.size;
+        cctx.fillStyle='#fff';cctx.font='12px monospace';
+        cctx.fillText('topY='+topY+'  N='+N+'  hasIdx='+(!!idx)+'  topTris='+tri+'  topVerts='+vx,8,114);
+      // 扫描 view canvas 中浅绿像素的屏幕 bbox（matColor #b6e3a8）
+      try {
+        const cvs = renderer.domElement;
+        const tmp = document.createElement('canvas');
+        tmp.width = cvs.width; tmp.height = cvs.height;
+        const tc = tmp.getContext('2d');
+        tc.drawImage(cvs, 0, 0);
+        const data = tc.getImageData(0, 0, cvs.width, cvs.height).data;
+        const tr=182,tg=227,tb=168;
+        let gx0=Infinity,gx1=-Infinity,gy0=Infinity,gy1=-Infinity;
+        const step = 2;
+        for (let y=0;y<cvs.height;y+=step){
+          for (let x=0;x<cvs.width;x+=step){
+            const i=(y*cvs.width+x)*4;
+            const dr=data[i]-tr,dg=data[i+1]-tg,db=data[i+2]-tb;
+            if (dr*dr+dg*dg+db*db<2500){
+              if(x<gx0)gx0=x;if(x>gx1)gx1=x;if(y<gy0)gy0=y;if(y>gy1)gy1=y;
+            }
+          }
+        }
+        const sxS = cvs.clientWidth/cvs.width, syS = cvs.clientHeight/cvs.height;
+        const gx0c=gx0*sxS, gx1c=gx1*sxS, gy0c=gy0*syS, gy1c=gy1*syS;
+        cctx.fillStyle='#fff';cctx.fillText('green-px css: '+gx0c.toFixed(0)+','+gy0c.toFixed(0)+'→'+gx1c.toFixed(0)+','+gy1c.toFixed(0)+' wh='+(gx1c-gx0c).toFixed(0)+'x'+(gy1c-gy0c).toFixed(0),8,130);
+        // 用黄色矩形标出绿色像素真实 bbox，便于肉眼对比
+        cctx.strokeStyle='#ffea00';cctx.lineWidth=2;
+        cctx.strokeRect(gx0c, gy0c, gx1c-gx0c, gy1c-gy0c);
+      } catch(e){}
+      } catch(e){}
+    }
+    // 不重合量（屏幕像素）—— 一行醒目大字
+    const dx = Math.round(bx0-px0), dy = Math.round(by0-py0);
+    const dw = Math.round((bx1-bx0)-(px1-px0)), dh = Math.round((by1-by0)-(py1-py0));
+    cctx.fillStyle='rgba(255,0,80,0.9)'; cctx.fillRect(4, 124, 470, 30);
+    cctx.fillStyle='#fff'; cctx.font='bold 16px monospace';
+    cctx.fillText('Δ xy=' + dx + ',' + dy + '  Δ wh=' + dw + ',' + dh + 'px', 8, 144);
+  }
+}
+
+// 命中检测：优先手柄，其次锚点（屏幕空间距离，保证不同缩放下手感一致）
+function curveHit(e) {
+  const c = P.classicCtrl;
+  if (!Array.isArray(c)) return null;
+  const r = curveLayer.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const near = (s, d) => Math.hypot(s.x - mx, s.y - my) <= d;
+  for (let i = 0; i < c.length; i++) {
+    if (c[i].pin) continue;
+    for (const k of ['h1', 'h2']) {
+      if (near(shapeToScreen(c[i][k].x, c[i][k].y), 9)) return { i, kind: k };
+    }
+  }
+  for (let i = 0; i < c.length; i++) {
+    if (c[i].pin) continue;
+    if (near(shapeToScreen(c[i].x, c[i].y), 11)) return { i, kind: 'anchor' };
+  }
+  return null;
+}
+
+curveLayer.addEventListener('pointerdown', e => {
+  // 编辑态下 curveLayer 必须吞掉所有 pointer 事件，避免 OrbitControls 把相机拖离顶视图
+  e.stopPropagation();
+  if (e.button !== 0) return;
+  const h = curveHit(e);
+  if (!h) return;
+  cvDrag = h;
+  curveLayer.setPointerCapture(e.pointerId);
+});
+
+curveLayer.addEventListener('pointermove', e => {
+  const c = P.classicCtrl;
+  if (!Array.isArray(c)) return;
+  if (!cvDrag) {
+    const h = curveHit(e);
+    const changed = JSON.stringify(h) !== JSON.stringify(cvHover);
+    cvHover = h;
+    curveLayer.style.cursor = h ? 'pointer' : 'crosshair';
+    if (changed) drawCurveOverlay();
+    return;
+  }
+  const m = screenToShape(e);
+  if (!m) return;
+  const p = c[cvDrag.i];
+  if (cvDrag.kind === 'anchor') {
+    const dx = m.x - p.x, dy = m.y - p.y;
+    p.x = m.x; p.y = m.y;
+    p.h1.x += dx; p.h1.y += dy;
+    p.h2.x += dx; p.h2.y += dy;
+  } else {
+    p[cvDrag.kind].x = m.x; p[cvDrag.kind].y = m.y;
+    // 默认对称联动保持切线共线（G1 平滑）；按住 Shift 可独立成折角
+    if (!e.shiftKey) {
+      const oth = cvDrag.kind === 'h1' ? 'h2' : 'h1';
+      const len = Math.hypot(p[oth].x - p.x, p[oth].y - p.y);
+      const d = Math.hypot(m.x - p.x, m.y - p.y) || 1;
+      p[oth].x = p.x - (m.x - p.x) / d * len;
+      p[oth].y = p.y - (m.y - p.y) / d * len;
+    }
+  }
+  rebuild();
+  drawCurveOverlay();
+});
+
+const endCurveDrag = () => { cvDrag = null; };
+curveLayer.addEventListener('pointerup', endCurveDrag);
+curveLayer.addEventListener('pointercancel', endCurveDrag);
+
+// 双击加点：插到最近的曲线段中点
+curveLayer.addEventListener('dblclick', e => {
+  const c = P.classicCtrl;
+  const m = screenToShape(e);
+  if (!Array.isArray(c) || !m) return;
+  let bi = 0, bd = Infinity;
+  for (let i = 0; i < c.length - 1; i++) {
+    const mx = (c[i].x + c[i + 1].x) / 2, my = (c[i].y + c[i + 1].y) / 2;
+    const d = Math.hypot(mx - m.x, my - m.y);
+    if (d < bd) { bd = d; bi = i; }
+  }
+  c.splice(bi + 1, 0, { x: m.x, y: m.y, h1: { x: m.x, y: m.y }, h2: { x: m.x, y: m.y } });
+  // 仅对新点及其邻居重算切线，保持其他锚点的手动调整
+  const seg = c.slice(Math.max(0, bi), Math.min(c.length, bi + 3));
+  autoSmoothClassicCtrl(seg);
+  rebuild(); drawCurveOverlay();
+});
+
+// 右键删点（pin 与保证至少 3 点的约束下）
+curveLayer.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const c = P.classicCtrl;
+  if (!Array.isArray(c) || c.length <= 3) return;
+  const h = curveHit(e);
+  if (!h || h.kind !== 'anchor' || c[h.i].pin) return;
+  c.splice(h.i, 1);
+  cvHover = null;
+  rebuild(); drawCurveOverlay();
+});
+
 /* ================= 导出 ================= */
 function exportPNG() {
   const scale = P.exportScale;
@@ -1271,6 +1764,7 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  if (curveEdit) { setEditOrtho(); resizeCurveLayer(); drawCurveOverlay(); }
 }
 window.addEventListener('resize', resize);
 
@@ -1278,11 +1772,25 @@ rebuild();
 updateLights();
 updateBackground();
 resize();
+// 默认：经典模式 + 编辑轮廓勾选，方便调试控制曲线与模型外形对齐
+if (P.shape === 'classic') setCurveEdit(true);
 
 (function loop() {
   requestAnimationFrame(loop);
   controls.update();
-  renderer.render(scene, camera);
+  // 编辑态：用正交相机渲染（与覆盖层投影严格同源）
+  const renderCam = curveEdit && orthoCam ? orthoCam : camera;
+  renderer.render(scene, renderCam);
+  // 相机/投影变动时同步覆盖层（拖动、滑条、resize 都会改 orthoCam 投影矩阵）
+  if (curveEdit) {
+    const k = orthoCam.projectionMatrix.elements[0].toFixed(5);
+    if (k !== lastCamKey) { lastCamKey = k; drawCurveOverlay(); }
+  }
+  // 相机移动时同步叠加层（编辑态下相机被锁定，此处仅覆盖过渡与视图切换）
+  if (curveEdit) {
+    const k = renderCam.position.toArray().join(',') + '|' + renderCam.projectionMatrix.elements[0];
+    if (k !== lastCamKey) { lastCamKey = k; drawCurveOverlay(); }
+  }
 })();
 </script>
 </body>
