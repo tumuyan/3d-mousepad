@@ -187,17 +187,18 @@ const P = {
   edgeSame: false,   // true=边缘与上表面作为整体着色（共享本色+贴图）
   // 腕托
   wristStyle: 'full', // none | full | balls
-  wH: 20,             // 隆起高度
+  wH: 27,             // 隆起高度
   wW: 150,            // 宽度（整体式）
-  wD: 74,             // 前后长度
+  wD: 89,             // 前后长度
   wPos: 20,           // 距底边距离
-  wGap: 78,           // 双球间距
-  wBW: 78,            // 单球宽度
+  wGap: 71,           // 双球间距
+  wBW: 82,            // 单球宽度
   wMorph: 0.55,       // 整体腕托: 0=椭球 1=肾型
   wMorphRot: 0,       // 肾形朝向（度），180=凹陷转向另一侧
-  wRot: 0,            // 双球旋转角（两球反向）
-  wEgg: 0,            // 双球鹅蛋度 -0.45..0.45
-  wMargin: 28,        // 经典款：外形超出腕托的距离（overhang）
+  wRot: 10,            // 双球旋转角（两球反向）
+  wEgg: 0.1,            // 双球鹅蛋度 -0.45..0.45
+  wJoin: 16,           // 双球过渡弧宽度（0=保留原始相交尖角）
+  wMargin: 2,        // 经典款：外形超出腕托的距离（overhang）
   topRound: 0.78,     // 经典款：顶部弧度（纵向半径/宽度半径）
   topAsym: 0.15,      // 经典款：顶部左右不对称度（>0 左上饱满）
   waistLDepth: 0.95,  // 经典款：左腰内凹深度
@@ -324,15 +325,17 @@ function padTopOff(asym) {
 }
 
 // 经典款：轮廓 = 贴合腕托的等距底部曲线 + 左右非对称腰线 + 饱满顶部
-// 底部严格沿腕托的肾形/双球变形几何外扩 wMargin，上部用贝塞尔曲线平滑连接
+// 底部严格沿腕托的肾形/双球变形几何外扩 wMargin（原样折线，保留球间凹槽）；
+// 侧边与顶部用全局 G1 连续的 Hermite 链（双圆弧穹顶 + 切线连续侧边），无折角
 function makeHugShape() {
   const M = P.wMargin;
   const zBase = P.padH / 2 - P.wPos - P.wD / 2;
 
   const bottomPts = [];
-  const BSTEPS = 80;
+  const BSTEPS = 100;
   let rawEdgeL = null; // 未加 overhang 的腕托原始侧缘 x（用于腰线基准）
   let rawEdgeR = null;
+  const norm2 = (x, y) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
 
   // 采样某一腕托轮廓在前半圆(z>=0)上的“原始足迹”（未经 overhang 偏移），
   // 与 3D 碗托几何体保持同一套单位球变形/旋转/缩放，返回 [{x, z}]
@@ -383,6 +386,36 @@ function makeHugShape() {
     return raw;
   }
 
+  function segHit(a1, a2, b1, b2) {
+    const d1x = a2.x - a1.x, d1y = a2.y - a1.y;
+    const d2x = b2.x - b1.x, d2y = b2.y - b1.y;
+    const den = d1x * d2y - d1y * d2x;
+    if (Math.abs(den) < 1e-12) return null;
+    const t = ((b1.x - a1.x) * d2y - (b1.y - a1.y) * d2x) / den;
+    const s = ((b1.x - a1.x) * d1y - (b1.y - a1.y) * d1x) / den;
+    return (t > 1e-6 && t < 1 - 1e-6 && s > 1e-6 && s < 1 - 1e-6)
+      ? { x: a1.x + d1x * t, y: a1.y + d1y * t } : null;
+  }
+
+  // 偏移折线去环：交叉时保留最外圈（修复凹槽附近偏移自交）
+  function removeOffsetLoops() {
+    for (let pass = 0; pass < 6; pass++) {
+      let done = true;
+      outer:
+      for (let i = 0; i < bottomPts.length - 1; i++) {
+        for (let j = i + 2; j < bottomPts.length - 1; j++) {
+          const hit = segHit(bottomPts[i], bottomPts[i + 1], bottomPts[j], bottomPts[j + 1]);
+          if (hit) {
+            bottomPts.splice(i + 1, j - i, hit);
+            done = false;
+            break outer;
+          }
+        }
+      }
+      if (done) break;
+    }
+  }
+
   // 把“原始足迹”沿曲线法向向外偏移 M，写入 bottomPts
   // raw 必须按 右→左 顺序排列（bottomPts[0] 为右下，末尾为左下）
   function offsetFootprint(raw, pushEdges) {
@@ -402,6 +435,7 @@ function makeHugShape() {
       rawEdgeR = raw[0].x;
       rawEdgeL = raw[raw.length - 1].x;
     }
+    removeOffsetLoops();
   }
 
   if (P.wristStyle === 'full') {
@@ -414,22 +448,72 @@ function makeHugShape() {
     const rightBall = wristFootprint('ball', { rot: -rot, ox: half });
     const leftBall  = wristFootprint('ball', { rot:  rot, ox: -half });
 
+    // 足迹曲线 i 点的前向切线（中心差分）
+    function tanAt(arr, i) {
+      const a = arr[Math.max(0, i - 1)], b = arr[Math.min(arr.length - 1, i + 1)];
+      const l = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+      return { x: (b.x - a.x) / l, z: (b.z - a.z) / l };
+    }
+
+    // 双球间过渡弧：以两端切线做三次 Hermite 桥，替换/连接两侧弧段
+    // kA/kB = 每侧被替换的采样数（0=保留原始相交尖角）
+    // n = 桥采样密度
+    function bridge(rawR, iA, rawL, iB, kA, kB, n) {
+      const A = rawR[iA], B = rawL[iB];
+      const mA = tanAt(rawR, iA), mB = tanAt(rawL, iB);
+      // 切线臂长 ≈ 被替换的弧弦长，且不超过两端距离的一半
+      const chordAB = Math.hypot(B.x - A.x, B.z - A.z);
+      const armA = Math.min(Math.hypot(rawR[Math.min(iA + kA, BSTEPS)].x - A.x,
+                                        rawR[Math.min(iA + kA, BSTEPS)].z - A.z) * 0.9,
+                            chordAB * 0.45);
+      const armB = Math.min(Math.hypot(rawL[Math.max(iB - kB, 0)].x - B.x,
+                                        rawL[Math.max(iB - kB, 0)].z - B.z) * 0.9,
+                            chordAB * 0.45);
+      const out = [];
+      for (let j = 1; j <= n; j++) {
+        const t = j / (n + 1), u = 1 - t;
+        out.push({
+          x: u*u*u*A.x + 3*u*u*t*(A.x + mA.x*armA) + 3*u*t*t*(B.x - mB.x*armB) + t*t*t*B.x,
+          z: u*u*u*A.z + 3*u*u*t*(A.z + mA.z*armA) + 3*u*t*t*(B.z - mB.z*armB) + t*t*t*B.z,
+        });
+      }
+      return { pts: out };
+    }
+
     let raw;
     if (half < rxb) {
-      // 两球在 x 方向重叠：取外轮廓（右球右侧到交点，左球交点到左侧）
-      // 找右球与左球在 x 轴上的交点：half + rxb*cos(tR) = -half + rxb*cos(tL)
-      // 简化：直接按 x 取两球中 z 较大的点，再反转为右→左
-      const all = rightBall.concat(leftBall);
-      all.sort((a, b) => a.x - b.x);
-      const byX = new Map();
-      for (const p of all) {
-        const key = Math.round(p.x * 1000);
-        if (!byX.has(key) || byX.get(key).z < p.z) byX.set(key, p);
+      // 两球重叠：找两曲线最近点对作为交接处
+      let bi = 0, bj = 0, bd = Infinity;
+      for (let i = 0; i <= BSTEPS; i++) {
+        for (let j = 0; j <= BSTEPS; j++) {
+          const dx = rightBall[i].x - leftBall[j].x;
+          const dz = rightBall[i].z - leftBall[j].z;
+          const dd = dx * dx + dz * dz;
+          if (dd < bd) { bd = dd; bi = i; bj = j; }
+        }
       }
-      raw = Array.from(byX.values()).sort((a, b) => b.x - a.x);
+      // 用独立过渡弧替换交点附近的原始相交尖角
+      const wJoin = P.wJoin != null ? P.wJoin : 16;
+      if (wJoin > 0 && bi >= 2 && bj <= BSTEPS - 2) {
+        const kA = Math.min(wJoin, bi - 1);
+        const kB = Math.min(wJoin, BSTEPS - 1 - bj);
+        const br = bridge(rightBall, bi - kA, leftBall, bj + kB, kA, kB, Math.max(10, kA));
+        raw = rightBall.slice(0, bi - kA + 1).concat(br.pts, leftBall.slice(bj + kB));
+      } else {
+        raw = rightBall.slice(0, bi + 1).concat(leftBall.slice(bj));
+      }
     } else {
-      // 两球分离：直接右球 + 左球，都是右→左
-      raw = rightBall.concat(leftBall);
+      // 两球分离：同样插入一段独立过渡弧连接两球边缘
+      const wJoin = P.wJoin != null ? P.wJoin : 16;
+      const kSep = Math.max(2, Math.min(30, Math.round(BSTEPS * wJoin / 16 * 0.12)));
+      if (wJoin > 0 && BSTEPS - kSep >= 1 && kSep <= BSTEPS - 1) {
+        // 从两球相向端各回退若干采样，用过渡弧连接
+        const br = bridge(rightBall, BSTEPS - kSep, leftBall, kSep, kSep, kSep,
+                          Math.max(12, kSep));
+        raw = rightBall.slice(0, BSTEPS - kSep + 1).concat(br.pts, leftBall.slice(kSep));
+      } else {
+        raw = rightBall.concat(leftBall);
+      }
     }
     offsetFootprint(raw, true);
   } else {
@@ -443,94 +527,150 @@ function makeHugShape() {
   const asym = P.topAsym;
 
   const ltW = (P.padW / 2) * (1 + asym * 0.35);
-  const ltY = topY_s * (0.35 + asym * 0.15);
+  const ltY = topY_s * (0.35 + asym * 0.15) * (0.75 + P.topRound * 0.32);
   const pTL = { x: -ltW, y: ltY };
 
   const rtW = (P.padW / 2) * (1 - asym * 0.12);
-  const rtY = topY_s * (0.3 - asym * 0.08);
+  const rtY = topY_s * (0.3 - asym * 0.08) * (0.72 + P.topRound * 0.36);
   const pTR = { x: rtW, y: rtY };
 
   const pTop = { x: -padTopOff(asym), y: topY_s };
 
-  const lRange = pTL.y - pBL.y;
-  const waistLY = pBL.y + lRange * P.waistLPos;
-  const lBaseW = rawEdgeL != null ? Math.abs(rawEdgeL) : Math.abs(pBL.x);
-  const lShoulderW = Math.abs(pTL.x);
-  const waistLX = -(lBaseW + (lShoulderW - lBaseW) * (1 - P.waistLDepth));
-  const pWL = { x: waistLX, y: waistLY };
+  // 穹顶：左右两条圆弧在顶点相接，圆心均位于顶点正下方
+  // → 两弧精确过各自肩点，且顶点处切线严格水平（G1 拼接）
+  // 弧线向肩下延伸（topRound），侧边曲线直接汇入延伸点，过渡更流畅
+  const cx = pTop.x, ty0 = pTop.y;
+  const uL = pTL.x - cx, uR = pTR.x - cx;
+  const ycL = (ty0 * ty0 - uL * uL - pTL.y * pTL.y) / (2 * (ty0 - pTL.y));
+  const ycR = (ty0 * ty0 - uR * uR - pTR.y * pTR.y) / (2 * (ty0 - pTR.y));
+  const RL = Math.hypot(uL, pTL.y - ycL), RR = Math.hypot(uR, pTR.y - ycR);
+  const phiL = Math.atan2(pTL.y - ycL, uL);              // ∈ (π/2, π]
+  const phiR = Math.atan2(pTR.y - ycR, uR);              // ∈ [0, π/2)
+  const ext = Math.min(0.5, Math.max(0.03, (P.topRound - 0.4) / 1.6 * 0.47 + 0.03));
+  const yMin = ty0 * 0.12;
+  const sLmin = Math.min(0.999, Math.max(-0.999, (yMin - ycL) / (RL || 1)));
+  const sRmin = Math.min(0.999, Math.max(-0.999, (yMin - ycR) / (RR || 1)));
+  // 弧角钳制在有效区间：(π/2, π] 与 [0, π/2)，保证左右弧顺序正确
+  const aL = Math.max(Math.PI / 2 + 0.02,
+    Math.min(Math.PI - Math.asin(sLmin) - 0.01, phiL + ext));
+  const aR = Math.min(Math.PI / 2 - 0.02,
+    Math.max(Math.asin(sRmin) + 0.01, phiR - ext));
+  const jL = { x: cx + RL * Math.cos(aL), y: ycL + RL * Math.sin(aL) };
+  const jR = { x: cx + RR * Math.cos(aR), y: ycR + RR * Math.sin(aR) };
 
-  const rRange = pTR.y - pBR.y;
-  const waistRY = pBR.y + rRange * P.waistRPos;
+  // 腰线锚点（高度钳制在底缘与肩点之间，防止极端滑条产生折叠）
+  const lBaseW = rawEdgeL != null ? Math.abs(rawEdgeL) : Math.abs(pBL.x);
   const rBaseW = rawEdgeR != null ? Math.abs(rawEdgeR) : Math.abs(pBR.x);
-  const rShoulderW = Math.abs(pTR.x);
-  const waistRX = rBaseW + (rShoulderW - rBaseW) * (1 - P.waistRDepth);
-  const pWR = { x: waistRX, y: waistRY };
+  const pWL = {
+    x: -(lBaseW + (Math.abs(pTL.x) - lBaseW) * (1 - P.waistLDepth)),
+    y: Math.min(jL.y - 10, Math.max(pBL.y + 10,
+        pBL.y + (jL.y - pBL.y) * P.waistLPos)),
+  };
+  const pWR = {
+    x: rBaseW + (Math.abs(pTR.x) - rBaseW) * (1 - P.waistRDepth),
+    y: Math.min(jR.y - 10, Math.max(pBR.y + 10,
+        pBR.y + (jR.y - pBR.y) * P.waistRPos)),
+  };
+
+  // 腰点切线引导点：沿通行方向前后各取一点，摊薄曲率反转（不改变轮廓位置）
+  const dWL = norm2(jL.x - pBL.x, jL.y - pBL.y);
+  const dWR = norm2(jR.x - pBR.x, jR.y - pBR.y);
+  const gL = Math.min(12, 0.4 * Math.min(Math.hypot(pWL.x - pBL.x, pWL.y - pBL.y),
+                                          Math.hypot(jL.x - pWL.x, jL.y - pWL.y)));
+  const gR = Math.min(12, 0.4 * Math.min(Math.hypot(pWR.x - pBR.x, pWR.y - pBR.y),
+                                          Math.hypot(jR.x - pWR.x, jR.y - pWR.y)));
+  const pWLb = { x: pWL.x - dWL.x * gL, y: pWL.y - dWL.y * gL };
+  const pWLa = { x: pWL.x + dWL.x * gL, y: pWL.y + dWL.y * gL };
+  const pWRb = { x: pWR.x - dWR.x * gR, y: pWR.y - dWR.y * gR };
+  const pWRa = { x: pWR.x + dWR.x * gR, y: pWR.y + dWR.y * gR };
+
+  // 侧边+穹顶锚点链（底部足迹不参与平滑，末尾原样拼接）
+  const ND = 18;
+  const chain = [pBL, pWLb, pWL, pWLa, jL];
+  for (let i = 1; i <= ND; i++) {
+    const ang = aL + (Math.PI / 2 - aL) * (i / ND);
+    chain.push({ x: cx + RL * Math.cos(ang), y: ycL + RL * Math.sin(ang) });
+  }
+  for (let i = 1; i <= ND; i++) {
+    const ang = Math.PI / 2 + (aR - Math.PI / 2) * (i / ND);
+    chain.push({ x: cx + RR * Math.cos(ang), y: ycR + RR * Math.sin(ang) });
+  }
+  chain.push(pWRa, pWR, pWRb, pBR);
+
+  // ---- Hermite 链采样：节点切线由相邻锚点推算（G1 连续，无折角）；
+  // 疏密悬殊的节点（链↔弧线衔接）切线取致密侧方向、长侧幅值，把转弯摊入长段 ----
+  const wr = P.waistRound;                    // 腰窝弧线圆润度 → 切线张力
+  const dBLv = norm2(pBL.x - bottomPts[bottomPts.length - 2].x,
+                     pBL.y - bottomPts[bottomPts.length - 2].y);
+  const dBRv = norm2(bottomPts[1].x - pBR.x, bottomPts[1].y - pBR.y);
+  function crTangent(i) {
+    const cur = chain[i];
+    let vx, vy;
+    if (i === 0) { vx = dBLv.x; vy = dBLv.y; }
+    else if (i === chain.length - 1) { vx = dBRv.x; vy = dBRv.y; }
+    else {
+      const prev = chain[i - 1], next = chain[i + 1];
+      const dPrev = Math.hypot(cur.x - prev.x, cur.y - prev.y) || 1;
+      const dNext = Math.hypot(next.x - cur.x, next.y - cur.y) || 1;
+      if (dNext < dPrev * 0.25) { vx = next.x - cur.x; vy = next.y - cur.y; }
+      else if (dPrev < dNext * 0.25) { vx = cur.x - prev.x; vy = cur.y - prev.y; }
+      else { vx = next.x - prev.x; vy = next.y - prev.y; }
+    }
+    const vl = Math.hypot(vx, vy) || 1;
+    let mag;
+    if (i === 0 || i === chain.length - 1) mag = 24;
+    else {
+      const prev = chain[i - 1], next = chain[i + 1];
+      const dPrev = Math.hypot(cur.x - prev.x, cur.y - prev.y) || 1;
+      const dNext = Math.hypot(next.x - cur.x, next.y - cur.y) || 1;
+      mag = (dNext < dPrev * 0.25 || dPrev < dNext * 0.25)
+        ? Math.max(dPrev, dNext) / 0.8
+        : Math.max(dPrev, dNext) / 3;
+    }
+    const tens = 0.7 + wr * 0.6;
+    return { x: vx / vl * mag * tens, y: vy / vl * mag * tens };
+  }
+
+  // 采样整条轮廓（侧边+穹顶 Hermite 链 + 底部足迹折线）
+  const outlinePts = [{ x: chain[0].x, y: chain[0].y }];
+  const emit = (x, y) => outlinePts.push({ x, y });
+  for (let i = 0; i < chain.length - 1; i++) {
+    const P0 = chain[i], P1 = chain[i + 1];
+    const m0 = crTangent(i), m1 = crTangent(i + 1);
+    const ch = Math.hypot(P1.x - P0.x, P1.y - P0.y) || 1;
+    const cap = ch * 2.4;
+    const l0 = Math.hypot(m0.x, m0.y), l1 = Math.hypot(m1.x, m1.y);
+    if (l0 > cap) { m0.x *= cap / l0; m0.y *= cap / l0; }
+    if (l1 > cap) { m1.x *= cap / l1; m1.y *= cap / l1; }
+    const c0 = { x: P0.x + m0.x / 3, y: P0.y + m0.y / 3 };
+    const c1 = { x: P1.x - m1.x / 3, y: P1.y - m1.y / 3 };
+    const N = Math.min(60, Math.max(8, Math.ceil(ch / 2)));
+    for (let j = 1; j <= N; j++) {
+      const t = j / N, u = 1 - t;
+      emit(
+        u*u*u*P0.x + 3*u*u*t*c0.x + 3*u*t*t*c1.x + t*t*t*P1.x,
+        u*u*u*P0.y + 3*u*u*t*c0.y + 3*u*t*t*c1.y + t*t*t*P1.y
+      );
+    }
+  }
+
+  // 底部腕托包裹足迹：原样折线（保留球间凹槽特征）
+  for (let i = 1; i < bottomPts.length - 1; i++) emit(bottomPts[i].x, bottomPts[i].y);
+
+  // 轻量拉普拉斯平滑收尾：压平残余微转折；凹槽区域保持锐利，端点不动
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 1; i < outlinePts.length - 1; i++) {
+      const p = outlinePts[i];
+      if (p.y < -55 && Math.abs(p.x) < 70) continue;   // 球间凹槽区不平滑
+      const a = outlinePts[i - 1], b = outlinePts[i + 1];
+      p.x += 0.25 * (a.x + b.x - 2 * p.x);
+      p.y += 0.25 * (a.y + b.y - 2 * p.y);
+    }
+  }
 
   const s = new THREE.Shape();
-  s.moveTo(pBL.x, pBL.y);
-
-  const wr = P.waistRound; // 腰窝弧线圆润度 0..1
-  const topPull = Math.min(0.75, 0.22 + P.topRound * 0.32); // 顶部圆度控制
-
-  // 二次贝塞尔弧线控制点：sign=+1 向外凸，sign=-1 向内凹
-  function arcCP(A, B, sign, factor) {
-    const mx = (A.x + B.x) / 2;
-    const my = (A.y + B.y) / 2;
-    const dx = B.x - A.x;
-    const dy = B.y - A.y;
-    const len = Math.hypot(dx, dy) || 1;
-    // 沿行进方向左侧的法向（逆时针轮廓的外侧）
-    const nx = -dy / len;
-    const ny = dx / len;
-    const off = len * factor * wr;
-    return { x: mx + nx * sign * off, y: my + ny * sign * off };
-  }
-
-  // 4b. 左下缘 → 左腰（向外微凸）
-  const cpBL_WL = arcCP(pBL, pWL, +1, 0.28);
-  s.quadraticCurveTo(cpBL_WL.x, cpBL_WL.y, pWL.x, pWL.y);
-
-  // 4c. 左腰 → 左肩（向内凹陷，与上一段 G1 连续）
-  const kL = 0.55;
-  const cpWL_TL = {
-    x: pWL.x + (pWL.x - cpBL_WL.x) * kL,
-    y: pWL.y + (pWL.y - cpBL_WL.y) * kL
-  };
-  s.quadraticCurveTo(cpWL_TL.x, cpWL_TL.y, pTL.x, pTL.y);
-
-  // 4d. 左肩 → 顶部最高点（饱满穹顶）
-  s.bezierCurveTo(
-    pTL.x, pTop.y,
-    pTop.x - (pTop.x - pTL.x) * topPull, pTop.y,
-    pTop.x, pTop.y
-  );
-
-  // 4e. 顶部最高点 → 右肩
-  s.bezierCurveTo(
-    pTop.x + (pTR.x - pTop.x) * topPull, pTop.y,
-    pTR.x, pTop.y,
-    pTR.x, pTR.y
-  );
-
-  // 4f. 右腰 → 右下缘（向外微凸）
-  const cpWR_BR = arcCP(pWR, pBR, +1, 0.28);
-  const kR = 0.55;
-
-  // 4g. 右肩 → 右腰（向内凹陷，与下一段 G1 连续）
-  const cpTR_WR = {
-    x: pWR.x + (pWR.x - cpWR_BR.x) * kR,
-    y: pWR.y + (pWR.y - cpWR_BR.y) * kR
-  };
-  s.quadraticCurveTo(cpTR_WR.x, cpTR_WR.y, pWR.x, pWR.y);
-
-  // 4h. 右腰 → 右下缘
-  s.quadraticCurveTo(cpWR_BR.x, cpWR_BR.y, pBR.x, pBR.y);
-
-  // 4g. 底部腕托包裹曲线（从右到左的采样点连线）
-  for (let i = 1; i < bottomPts.length; i++) {
-    s.lineTo(bottomPts[i].x, bottomPts[i].y);
-  }
-
+  s.moveTo(outlinePts[0].x, outlinePts[0].y);
+  for (let i = 1; i < outlinePts.length; i++) s.lineTo(outlinePts[i].x, outlinePts[i].y);
   s.closePath();
   return s;
 }
@@ -839,7 +979,7 @@ function texControls(el, tp, title, key) {
     texUI[key].push({ inp, prop, val: inp.parentElement.querySelector('.val') });
     return inp;
   };
-  track(selectRow(el, '重复模式', [['clamp','不重复·边缘延伸'],['cutout','不重复·镂空'],['repeat','重复'],['mirror','镜像重复']],
+  track(selectRow(el, '重复模式', [['clamp','不重复·边缘延伸'],['cutout','不重复'],['repeat','重复'],['mirror','镜像重复']],
     () => tp.wrap, v => { tp.wrap = v; refreshTextures(); rebuild(); }), 'wrap');
   track(slider(el, '缩放', 0.2, 5, 0.01, () => tp.s, v => { tp.s = v; refreshTextures(); }), 's');
   track(slider(el, '长宽比', 0.25, 4, 0.01, () => tp.asp, v => { tp.asp = v; refreshTextures(); }), 'asp');
@@ -868,7 +1008,7 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   const hugRows = [
     slider(el, '顶部弧度', 0.4, 2, 0.01, () => P.topRound, v => { P.topRound = v; rebuild(); }),
     slider(el, '顶部偏心', -0.5, 0.5, 0.01, () => P.topAsym, v => { P.topAsym = v; rebuild(); }),
-    slider(el, '外形超出腕托', 0, 80, 1, () => P.wMargin, v => { P.wMargin = v; rebuild(); }),
+    slider(el, '外形超出腕托', 0, 10, 0.01, () => P.wMargin, v => { P.wMargin = v; rebuild(); }),
     slider(el, '左腰凹深', 0, 2.5, 0.01, () => P.waistLDepth, v => { P.waistLDepth = v; rebuild(); }),
     slider(el, '左腰位置', 0.1, 0.9, 0.01, () => P.waistLPos, v => { P.waistLPos = v; rebuild(); }),
     slider(el, '右腰凹深', 0, 2.5, 0.01, () => P.waistRDepth, v => { P.waistRDepth = v; rebuild(); }),
@@ -902,7 +1042,8 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   rows.morphRot = slider(el, '肾形朝向°', -180, 180, 1, () => P.wMorphRot, v => { P.wMorphRot = v; rebuild(); });
   rows.bw    = slider(el, '单球宽度', 40, 150, 1, () => P.wBW, v => { P.wBW = v; rebuild(); });
   rows.rot   = slider(el, '双球旋转°', -60, 60, 1, () => P.wRot, v => { P.wRot = v; rebuild(); });
-  rows.egg   = slider(el, '鹅蛋度', -0.45, 0.45, 0.01, () => P.wEgg, v => { P.wEgg = v; rebuild(); });
+    rows.egg   = slider(el, '鹅蛋度', -0.45, 0.45, 0.01, () => P.wEgg, v => { P.wEgg = v; rebuild(); });
+    rows.join  = slider(el, '双球过渡弧', 0, 40, 1, () => P.wJoin, v => { P.wJoin = v; rebuild(); });
   rows.d     = slider(el, '前后长度', 40, 160, 1, () => P.wD, v => { P.wD = v; rebuild(); });
   rows.gap   = slider(el, '双球间距', 20, 200, 1, () => P.wGap, v => { P.wGap = v; rebuild(); });
   rows.pos   = slider(el, '距底边', 0, 120, 1, () => P.wPos, v => { P.wPos = v; rebuild(); });
@@ -914,6 +1055,7 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
     rows.bw.closest('.row').style.display    = balls ? '' : 'none';
     rows.rot.closest('.row').style.display   = balls ? '' : 'none';
     rows.egg.closest('.row').style.display   = balls ? '' : 'none';
+    rows.join.closest('.row').style.display  = balls ? '' : 'none';
     rows.gap.closest('.row').style.display   = balls ? '' : 'none';
     [rows.h, rows.d, rows.pos].forEach(r => r.closest('.row').style.display = P.wristStyle === 'none' ? 'none' : '');
   };
