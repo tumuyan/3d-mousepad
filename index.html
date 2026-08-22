@@ -68,12 +68,11 @@
   #toast-wrap { position:fixed; left:50%; bottom:28px; transform:translateX(-50%);
     display:flex; flex-direction:column; gap:8px; z-index:9999; pointer-events:none; }
   .toast { pointer-events:auto; max-width:320px; padding:11px 16px; border-radius:10px;
-    font-size:13px; line-height:1.5; color:#fff; background:#2a2e38;
+    font-size:13px; line-height:1.5; color:#e6e8ee; background:#2a2e38;
     border:1px solid #4a4e5c; box-shadow:0 6px 22px #0008;
     opacity:0; transform:translateY(10px); transition:opacity .25s, transform .25s; }
   .toast.show { opacity:1; transform:translateY(0); }
-  .toast.ok  { border-color:#3ad29f; }
-  .toast.err { border-color:#ff5e6c; }
+  .toast.err { color:#ff6b78; }
 
   /* ---------- 按钮 ---------- */
   .btn {

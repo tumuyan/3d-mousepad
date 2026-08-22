@@ -20,6 +20,8 @@
 | **ZIP 打包 / 解包** | `makeZip(files)` / `parseZip(u8)`（含 `crc32`） | 纯前端用 `CompressionStream`/`DecompressionStream` 实现，无第三方依赖；文件头存 `config.json` + 可选 `tex1.*`/`tex2.*` |
 | **贴图拖拽区预览** | `setDZPreview(dz, url, onClear)`（DOM 元素，非字符串） | 在 `#dz1`/`#dz2` 显示已上传贴图的缩略图与清除按钮；第一个参数必须是 DOM 元素（`getElementById('dz1')`），传字符串会 `innerHTML` 报错 |
 | **贴图加载** | `makeTex(url, cb)` | 第二个参数是**加载完成回调 `cb(t)`**，不是变换参数；误把 `P.t1` 当第二参会导致 `cb is not a function` |
+| **剪贴板粘贴按钮** | `#paste1` / `#paste2`（`.paste-btn`） | 位于左侧贴图区每行最左、与右侧 dropzone 等高的 `📋` 小方块。点击调用 `navigator.clipboard.read()` 主动读取剪贴板图片，分别填入 `tex1`/`tex2`。按钮在 `.dz-wrap` 内、作为 dropzone 的**兄弟节点**（非子节点），不受 `setDZPreview`/`resetDZ` 的 `innerHTML` 重写影响，**常驻显示**（上传/清除后不消失） |
+| **Toast 提示** | `toast(msg, type, ms)` | 轻量非阻塞提示，替代 `alert()`。`type` 为 `''`/`'ok'`/`'err'`：`err` 显示为红字，其余普通浅色文字，边框统一无特殊设计（不再用绿/红边）。底部居中淡入、`ms` 毫秒后（默认 2600）点击或超时自动淡出移除。所有用户反馈（导入成功/失败、剪贴板错误等）统一走 toast，**禁止新增 `alert()`** |
 
 ## 2. 关键代码定位
 - `makeClassicShape()` — 生成经典形状的完整 `THREE.Shape`，上半贝塞尔 + 下半足迹折线
@@ -57,6 +59,9 @@
 - 经典模式"鼠标垫外形"选项组顺序：`腕托顶距` → `编辑轮廓` → `外形超出腕托`（三项）。**`编辑轮廓` 行右侧直接挂一个 `重置锚点` 按钮**（不再有独立的"轮廓锚点/重置为默认形状"行）；点击把 `P.classicCtrl` 重置为 `DEFAULT_CLASSIC_CTRL` 并 `refreshShapeUI() + rebuild()`。`checkRow` 已被改为返回 row 元素（而非 input），以便在该行内 `appendChild` 按钮
 - **导入配置后 UI 同步约定**：任何"依赖 `P` 值决定控件显隐/可见性"的逻辑，必须能在导入路径上被触发。`uiSyncers` 只同步**数值**（`inp.value`），不处理显隐。当前导入函数已统一调用 `refreshShapeUI()` + `refreshWristUI()` + `uiSyncers.forEach` + `syncTexUI`；若新增"根据某参数隐藏某行"的逻辑，要么挂进对应的 `refreshXxxUI()`（导入已调用），要么 push 进 `uiSyncers` 里做显隐。**曾因漏调 `refreshWristUI` 导致导入后款式切了但同组控件不显隐，以及 `colorRow` 漏 `return row` 导致边缘颜色行永远无法隐藏/恢复**
 - **贴图导入调用签名**：`makeTex(url, cb)`（cb 为回调，非变换参数）；`setDZPreview(dz, url, onClear)` 的 `dz` 必须是 DOM 元素（`getElementById('dz1')`），二者传错类型会分别报 `cb is not a function` / `Cannot create property 'innerHTML' on string`
+- **剪贴板粘贴按钮结构约定**：`📋` 按钮（`#paste1`/`#paste2`，class `paste-btn`）是 `.dz-wrap` 内、**dropzone 之前的兄弟节点**，用绝对定位固定在 dropzone 左侧、等高。⚠️**不要把它放回 dropzone 内部**——`setDZPreview`（`dz.innerHTML=''`）与 `resetDZ`（`innerHTML=html`）会重写 dropzone 内容，若按钮是子节点会被一起删掉、上传/清除后不再显示。按钮绑定在 `bindDropzone()` 内：`document.getElementById('paste'+dzId.slice(2))`，点击读取 `navigator.clipboard.read()` 取 `image/*` 类型 `Blob` 走 `loadImage`。`navigator.clipboard.read()` 仅在 `https`/`localhost` 安全上下文可用，`file://` 直接打开会为 `undefined`（已 `if(!navigator.clipboard)` 兜底提示）。按钮**不要加 `.btn` 类**（否则被全局 `.btn` 的 `width:100%`/粉色渐变/`margin-top` 覆盖），其样式由 `button.paste-btn` 独立声明
+- **用户反馈统一用 toast**：所有面向用户的提示（导入成功/失败、剪贴板不支持/无图/异常等）一律调用 `toast(msg, type, ms)`（`type` 取 `''`/`'ok'`/`'err'`：`err` 红字，其余普通文字，**边框无特殊设计**），**严禁新增 `alert()`**。`toast` 为非阻塞底部居中提示，自动淡出；如需阻塞式确认勿用 `alert`，应自建模态
+
 - **`ensureClassicCtrl` 的 stale 判断**：只要求每个点 `x/y` 有限；若某点"部分有手柄"（`p.h1||p.h2` 但缺其一）才判无效。中间接缝锚点可**完全无 `h1/h2`**（合法），返回前会由 `ensureClassicCtrl` 自动补一对平滑共线手柄，避免 `makeClassicShape()` 的贝塞尔链读到 `undefined` 手柄。**曾误判"无 h 的点"为 stale 而退回程序化默认形状**，导致默认外形不符设计稿
 - **经典轮廓导入兼容**：`importConfigFile` 已兼容旧版 `{p:{x,y}, h1, h2}` 嵌套格式（自动提升为顶层 `{x,y,h1,h2}`）。但优先保持运行时顶层格式；导入任何顶层格式的设计稿后，其外形应与默认外形（同一 `DEFAULT_CLASSIC_CTRL`）一致
 
