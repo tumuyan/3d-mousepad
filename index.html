@@ -60,6 +60,8 @@
     background:#000a; color:#fff; font-size:11px; line-height:18px; cursor:pointer;
   }
   .dropzone .clear:hover { background:#ff4d6d; }
+  .dz-wrap { position:relative; padding-left:34px; margin-bottom:8px; }
+  .dz-wrap .dropzone { margin-bottom:0; }
   .hint { font-size:11px; color:#6f7382; margin:2px 0 8px; line-height:1.5; }
 
   /* ---------- 按钮 ---------- */
@@ -73,6 +75,15 @@
   .btn.ghost:hover { background:#3b3f4b; }
   .btn-row { display:flex; gap:6px; }
   .btn-row .btn { margin-top:8px; }
+  button.paste-btn {
+    position:absolute; left:0; top:0; bottom:0;
+    width:26px; padding:0; margin:0;
+    display:flex; align-items:center; justify-content:center;
+    border:1.5px solid #4a4e5c; background:#2a2e38; color:#cdd3dd; border-radius:6px;
+    cursor:pointer; font-size:14px; line-height:1; transition:.15s;
+  }
+  button.paste-btn:hover { border-color:#ff7eb6; color:#ffb9d6; }
+  button.paste-btn:disabled { opacity:.5; cursor:default; }
 
   /* ---------- 视口 ---------- */
   #stage { flex:1; position:relative; }
@@ -157,11 +168,17 @@
     <details open>
       <summary>贴图</summary>
       <div class="sec-body">
-        <div class="dropzone" id="dz1">点击上传主贴图<br><small>或拖拽图片到画布</small></div>
+        <div class="dz-wrap">
+          <button class="paste-btn" id="paste1" type="button" title="粘贴剪贴板图片">📋</button>
+          <div class="dropzone" id="dz1">点击上传主贴图<br><small>或拖拽图片到画布</small></div>
+        </div>
         <input type="file" id="file1" accept="image/*" hidden>
-        <div class="dropzone" id="dz2">点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small></div>
+        <div class="dz-wrap">
+          <button class="paste-btn" id="paste2" type="button" title="粘贴剪贴板图片">📋</button>
+          <div class="dropzone" id="dz2">点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small></div>
+        </div>
         <input type="file" id="file2" accept="image/*" hidden>
-        <div class="hint">提示：直接把图片文件拖到右侧画布也可上传（自动填入空位）。</div>
+        <div class="hint">提示：直接把图片文件拖到右侧画布也可上传（自动填入空位）。点击左侧「粘贴」按钮，可将剪贴板中的图片填入对应槽位（不经过预览区）。</div>
         <div id="tex1Ctrls"></div>
         <div id="tex2Ctrls"></div>
       </div>
@@ -1228,6 +1245,30 @@ function bindDropzone(dzId, fileId, onImg) {
   const dz = document.getElementById(dzId), fi = document.getElementById(fileId);
   dz.onclick = e => { if (!e.target.classList.contains('clear')) fi.click(); };
   fi.onchange = () => { if (fi.files[0]) loadImage(fi.files[0], onImg, dz); fi.value = ''; };
+  // 「粘贴」按钮：主动读取剪贴板图片填入对应槽位（不依赖聚焦/右键，独立于预览区）
+  const pbtn = document.getElementById('paste' + dzId.slice(2));
+  if (pbtn) pbtn.onclick = async e => {
+    e.stopPropagation();
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+      alert('当前浏览器不支持主动读取剪贴板，请改用文件上传或拖拽。');
+      return;
+    }
+    pbtn.disabled = true;
+    try {
+      const items = await navigator.clipboard.read();
+      let file = null;
+      for (const it of items) {
+        const type = it.types.find(t => t.startsWith('image/'));
+        if (type) { file = await it.getType(type); break; }
+      }
+      if (!file) { alert('剪贴板中没有图片。'); return; }
+      loadImage(file, onImg, dz);
+    } catch (err) {
+      alert('无法读取剪贴板：' + (err && err.message ? err.message : err) + '\n（需用户已授权剪贴板读取权限）');
+    } finally {
+      pbtn.disabled = false;
+    }
+  };
 }
 function loadImage(file, onImg, dz) {
   const rd = new FileReader();
