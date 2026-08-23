@@ -109,6 +109,27 @@
   #toolbar {
     position:absolute; top:14px; right:16px; display:flex; gap:8px; align-items:center;
   }
+  /* 主工具栏（导出图片 / 复制 / 配置）：与 #toolbar 同一行，置于其左方 */
+  #topbar {
+    position:absolute; top:14px; left:16px; right:auto; display:flex; gap:8px; align-items:center; z-index:6;
+  }
+  .dd-btn {
+    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #3a3d47; color:#cfd2dc;
+    padding:7px 14px; font-size:12px; cursor:pointer; border-radius:8px; transition:.15s;
+  }
+  .dd-btn:hover { color:#fff; background:#31343e; }
+  .dropdown { position:relative; }
+  .dd-menu {
+    display:none; position:absolute; right:0; top:calc(100% + 6px); min-width:160px;
+    background:#262931f2; backdrop-filter:blur(8px); border:1px solid #3a3d47; border-radius:8px;
+    padding:5px; box-shadow:0 6px 20px #000a; z-index:7;
+  }
+  .dropdown.open .dd-menu { display:block; }
+  .dd-menu button {
+    display:block; width:100%; text-align:left; background:transparent; border:none;
+    color:#d7d9e0; padding:8px 10px; font-size:12px; cursor:pointer; border-radius:6px;
+  }
+  .dd-menu button:hover { background:#31343e; color:#fff; }
   /* 分段按钮组：外观连在一起 */
   .seg {
     display:inline-flex; border-radius:8px; overflow:hidden;
@@ -226,6 +247,24 @@
   <main id="stage">
     <canvas id="view"></canvas>
     <canvas id="curveLayer"></canvas>
+    <div id="topbar">
+      <div class="dropdown" id="ddExportImg">
+        <button class="dd-btn">导出图片 ▾</button>
+        <div class="dd-menu">
+          <button data-act="preview">预览图 (PNG)</button>
+          <button data-act="model">渲染图 (PNG)</button>
+        </div>
+      </div>
+      <div class="dropdown" id="ddConfig">
+        <button class="dd-btn">配置 ▾</button>
+        <div class="dd-menu">
+          <button data-act="exportJson">导出配置 (JSON)</button>
+          <button data-act="exportZip">导出配置 (ZIP)</button>
+          <button data-act="import">导入配置…</button>
+        </div>
+      </div>
+      <input type="file" id="cfgFile" accept=".json,.zip,application/json,application/zip" hidden>
+    </div>
     <div id="toolbar">
       <div class="seg" id="modeSeg" title="鼠标交互模式">
         <button data-mode="view" class="active">视角</button>
@@ -304,13 +343,13 @@ const P = {
   hemi: 0.55, key: 1.8, az: 35, el: 55, lightColor: '#ffffff', env: 0.6,
   shadow: false,
   // 背景/导出
-  bg: '#e9e7ec', transparent: false, exportScale: 2,
+  bg: '#e9e7ec', transparent: false, exportTransparent: false, exportScale: 2,
 };
 
 /* ================= 渲染基础 ================= */
 const canvas = document.getElementById('view');
 const stage  = document.getElementById('stage');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer: true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.shadowMap.enabled = true;
@@ -1221,6 +1260,7 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   const el = document.getElementById('exportCtrls');
   checkRow(el, '透明背景', () => P.transparent, v => { P.transparent = v; updateBackground(); });
   colorRow(el, '背景颜色', () => P.bg, v => { P.bg = v; updateBackground(); });
+  checkRow(el, '导出时透明背景', () => P.exportTransparent, v => { P.exportTransparent = v; });
   selectRow(el, '导出倍率', [['1','1x'],['2','2x'],['3','3x']], () => String(P.exportScale), v => P.exportScale = +v);
   // 配置名称：用于导出文件名
   {
@@ -1233,9 +1273,14 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
     row.append(lb, inp); el.appendChild(row);
   }
   const btn = document.createElement('button');
-  btn.className = 'btn'; btn.textContent = '导出 PNG 渲染图';
+  btn.className = 'btn'; btn.textContent = '导出预览图';
   btn.onclick = exportPNG;
   el.appendChild(btn);
+  const mbtn = document.createElement('button');
+  mbtn.className = 'btn'; mbtn.textContent = '导出模型渲染图';
+  mbtn.style.marginTop = '6px';
+  mbtn.onclick = exportModelPNG;
+  el.appendChild(mbtn);
   // 配置导入 / 导出
   const mkBtn = (text, fn) => { const b = document.createElement('button'); b.className = 'btn'; b.textContent = text; b.style.marginTop = '6px'; b.onclick = fn; el.appendChild(b); return b; };
   mkBtn('导出配置 (JSON)', exportConfigJSON);
@@ -1250,6 +1295,39 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   impBtn.style.background = '#2f6f4f';
   el.appendChild(imp);
 }
+
+/* --- 右上角主工具栏：导出图片 / 复制 / 配置 --- */
+(function bindTopbar() {
+  // 下拉开关
+  document.querySelectorAll('#topbar .dropdown').forEach(dd => {
+    const btn = dd.querySelector('.dd-btn');
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const open = dd.classList.contains('open');
+      document.querySelectorAll('#topbar .dropdown.open').forEach(o => o.classList.remove('open'));
+      if (!open) dd.classList.add('open');
+    });
+    dd.querySelector('.dd-menu').addEventListener('click', e => {
+      const act = e.target.getAttribute('data-act');
+      if (!act) return;
+      dd.classList.remove('open');
+      if (act === 'preview') exportPNG();
+      else if (act === 'model') exportModelPNG();
+      else if (act === 'exportJson') exportConfigJSON();
+      else if (act === 'exportZip') exportConfigZip();
+      else if (act === 'import') document.getElementById('cfgFile').click();
+    });
+  });
+  document.addEventListener('click', () => {
+    document.querySelectorAll('#topbar .dropdown.open').forEach(o => o.classList.remove('open'));
+  });
+  // 配置文件导入（复用已有 importConfigFile）
+  const cfgFile = document.getElementById('cfgFile');
+  cfgFile.addEventListener('change', () => {
+    if (cfgFile.files[0]) importConfigFile(cfgFile.files[0]).catch(e => toast('导入失败：' + e.message, 'err'));
+    cfgFile.value = '';
+  });
+})();
 
 /* ================= 上传 ================= */
 function bindDropzone(dzId, fileId, onImg) {
@@ -1911,16 +1989,127 @@ curveLayer.addEventListener('contextmenu', e => {
 });
 
 /* ================= 导出 ================= */
-function exportPNG() {
+// 取当前渲染用的相机（编辑态用正交相机，否则透视相机），与动画循环保持一致
+function activeCam() { return (curveEdit && orthoCam) ? orthoCam : camera; }
+
+function exportPNG(opts) {
+  const download = !opts || opts.download !== false;
   const scale = P.exportScale;
   const w = stage.clientWidth, h = stage.clientHeight;
+  const useCam = activeCam();
+  // 导出时临时套用导出透明设置，不改变预览状态
+  const prevTransparent = P.transparent;
+  if (P.exportTransparent !== P.transparent) {
+    P.transparent = P.exportTransparent;
+    updateBackground();
+  }
   renderer.setSize(w * scale, h * scale, false);
-  renderer.render(scene, camera);
+  renderer.render(scene, useCam);
   const url = renderer.domElement.toDataURL('image/png');
+  // 恢复预览状态
+  if (P.exportTransparent !== prevTransparent) {
+    P.transparent = prevTransparent;
+    updateBackground();
+  }
   renderer.setSize(w, h, false);
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  const a = document.createElement('a');
-  a.href = url; a.download = 'mousepad-3d.png'; a.click();
+  if (download) {
+    const a = document.createElement('a');
+    a.href = url; a.download = 'mousepad-3d-preview.png'; a.click();
+  }
+  return url;
+}
+
+/* 仅导出模型：自动取景到模型整体包围盒，背景始终透明，隐藏阴影平面 */
+function exportModelPNG(opts) {
+  const download = !opts || opts.download !== false;
+  const scale = P.exportScale;
+  const useCam = activeCam();
+  // 整体包围盒：padMesh + wristGroup（不含阴影平面）
+  const box = new THREE.Box3();
+  if (padMesh) box.expandByObject(padMesh);
+  if (wristGroup && wristGroup.visible) box.expandByObject(wristGroup);
+  if (box.isEmpty()) { toast('模型尚未构建，无法导出', 'err'); return; }
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const margin = 1.06; // 轻微留白，避免边缘裁切
+
+  // 保存原状态
+  const prevTransparent = P.transparent;
+  const prevShadow = shadowPlane.visible;
+  const persp = useCam.isPerspectiveCamera;
+  let saved = null;
+  if (persp) {
+    saved = { pos: useCam.position.clone(), tgt: controls.target.clone() };
+  } else {
+    saved = { left: useCam.left, right: useCam.right, top: useCam.top, bottom: useCam.bottom };
+  }
+
+  // 强制透明背景（不改变 P.transparent，导出后恢复）
+  P.transparent = true; updateBackground();
+  shadowPlane.visible = false;
+
+  // 计算相机取景，使模型居中充满画面
+  if (persp) {
+    const fitH = size.y * margin, fitW = size.x * margin;
+    const vFov = THREE.MathUtils.degToRad(useCam.fov);
+    const distH = (fitH / 2) / Math.tan(vFov / 2);
+    const distW = (fitW / 2) / Math.tan(vFov / 2) / useCam.aspect;
+    const dist = Math.max(distH, distW) + size.z * 0.5; // 视距叠加厚度方向余量
+    const dir = useCam.position.clone().sub(controls.target).normalize();
+    useCam.position.copy(center).add(dir.multiplyScalar(dist));
+    controls.target.copy(center);
+    useCam.updateMatrixWorld(true);
+    // 导出尺寸按模型宽高比，避免多余背景区域
+    const aspect = fitW / fitH;
+    const outH = Math.max(2, Math.round(stage.clientHeight * scale));
+    const outW = Math.max(2, Math.round(outH * aspect));
+    useCam.aspect = aspect; useCam.updateProjectionMatrix();
+    renderer.setSize(outW, outH, false);
+  } else {
+    const halfX = (size.x * margin) / 2, halfY = (size.y * margin) / 2;
+    const aspect = halfX / halfY;
+    if (aspect >= 1) {
+      useCam.top = center.z + halfY; useCam.bottom = center.z - halfY;
+      useCam.left = center.x - halfX * aspect; useCam.right = center.x + halfX * aspect;
+    } else {
+      useCam.left = center.x - halfX; useCam.right = center.x + halfX;
+      useCam.top = center.z + halfY / aspect; useCam.bottom = center.z - halfY / aspect;
+    }
+    useCam.updateProjectionMatrix(); useCam.updateMatrixWorld(true);
+    const outH = Math.max(2, Math.round(stage.clientHeight * scale));
+    const outW = Math.max(2, Math.round(outH * (halfX / halfY)));
+    renderer.setSize(outW, outH, false);
+  }
+
+  renderer.render(scene, useCam);
+
+  const url = renderer.domElement.toDataURL('image/png');
+
+  // 恢复预览状态
+  restore();
+  if (download) {
+    const a = document.createElement('a');
+    a.href = url; a.download = 'mousepad-3d-model.png'; a.click();
+  }
+  return url;
+
+  function restore() {
+    P.transparent = prevTransparent; updateBackground();
+    shadowPlane.visible = prevShadow;
+    if (persp) {
+      useCam.position.copy(saved.pos);
+      controls.target.copy(saved.tgt);
+      useCam.aspect = stage.clientWidth / stage.clientHeight;
+      useCam.updateProjectionMatrix();
+    } else {
+      useCam.left = saved.left; useCam.right = saved.right;
+      useCam.top = saved.top; useCam.bottom = saved.bottom;
+      useCam.updateProjectionMatrix();
+    }
+    renderer.setSize(stage.clientWidth, stage.clientHeight, false);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  }
 }
 
 /* ================= 配置导入 / 导出 ================= */
