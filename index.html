@@ -309,7 +309,7 @@ const P = {
   // 外形
   shape: 'classic',   // rect | ellipse | stadium | classic
   cfgName: '',        // 配置名称，用于导出文件名（留空则用默认名）
-  padW: 230, padH: 265, corner: 48, thick: 5, bevel: 3,
+  padW: 230, padH: 265, corner: 48, thick: 1, bevel: 3,
   edgeColor: '#f4f1ec',
   edgeSame: true,   // true=边缘与上表面作为整体着色（共享本色+贴图）
   // 腕托
@@ -321,7 +321,7 @@ const P = {
   wGap: 71,           // 双球间距
   wBW: 82,            // 单球宽度
   wMorph: 0.55,       // 整体腕托: 0=椭球 1=肾型
-  wMorphRot: 0,       // 肾形朝向（度），180=凹陷转向另一侧
+  wMorphRot: 0,       // 整体腕托旋转角度（度），肾型形状不变，仅绕竖直轴旋转
   wRot: 10,            // 双球旋转角（两球反向）
   wEgg: 0.1,            // 双球鹅蛋度 -0.45..0.45
   wJoin: 16,           // 双球过渡弧宽度（0=保留原始相交尖角）
@@ -579,13 +579,13 @@ function makeClassicShape() {
       for (let i = 0; i <= BSTEPS; i++) {
         const t = (i / BSTEPS) * Math.PI;          // 0..π，右→左沿前半圆
         const x0u = Math.cos(t), z0u = Math.sin(t);
-        const xru = c * x0u + s * z0u, zru = -s * x0u + c * z0u;
-        let x1u = xru, z1u = zru;
+        // 标准朝向先变形（肾型形状固定），再整体旋转，与 3D 侧 wristGroup.rotation.y 一致
+        let x1u = x0u, z1u = z0u;
         if (k > 0) {
-          const g = Math.exp(-((xru / 0.55) ** 2));
-          const front = Math.max(0, zru);
-          z1u = zru - k * 0.55 * g * front * front;
-          x1u = xru * (1 + k * 0.12);
+          const g = Math.exp(-((x0u / 0.55) ** 2));
+          const front = Math.max(0, z0u);
+          z1u = z0u - k * 0.55 * g * front * front;
+          x1u = x0u * (1 + k * 0.12);
         }
         raw.push({
           x: (c * x1u - s * z1u) * rx,
@@ -960,25 +960,18 @@ function rebuildWristMat() {
   if (wristMat) { wristMat.map = map; wristMat.needsUpdate = true; }
 }
 
-// 椭球 → 肾型 连续变形（k: 0..1，rot: 肾形朝向的旋转角度/度，0=凹陷朝使用者一侧）
-function deformKidney(geo, k, rot) {
+// 椭球 → 肾型 连续变形（k: 0..1）。肾型形状固定为"凹陷朝使用者一侧（z+ 方向）"，
+// 整体朝向旋转由 wristGroup.rotation.y 承担，故此处只做标准朝向的变形。
+function deformKidney(geo, k) {
   if (k <= 0) return;
-  const rad = THREE.MathUtils.degToRad(rot || 0);
-  const c = Math.cos(rad), s = Math.sin(rad);
   const pos = geo.attributes.position;
   for (let i = 0; i < pos.count; i++) {
     const x0 = pos.getX(i), y0 = pos.getY(i), z0 = pos.getZ(i);
-    // 先反旋到标准朝向做变形，再旋回，相当于让凹陷方向绕竖直轴转动
-    const xr =  c * x0 + s * z0;
-    const zr = -s * x0 + c * z0;
-    const front = Math.max(0, zr);
-    const g = Math.exp(-((xr / 0.55) ** 2));  // 中央高斯凹陷
-    let z1 = zr - k * 0.55 * g * front * front;
-    let x1 = xr * (1 + k * 0.12);             // 两瓣微微外扩
-    // 旋回原坐标
-    const x2 = c * x1 - s * z1;
-    const z2 = s * x1 + c * z1;
-    pos.setXYZ(i, x2, y0, z2);
+    const front = Math.max(0, z0);
+    const g = Math.exp(-((x0 / 0.55) ** 2));  // 中央高斯凹陷
+    let z1 = z0 - k * 0.55 * g * front * front;
+    let x1 = x0 * (1 + k * 0.12);             // 两瓣微微外扩
+    pos.setXYZ(i, x1, y0, z1);
   }
   geo.computeVertexNormals();
 }
@@ -1022,13 +1015,18 @@ function buildWrist(topY) {
       return m;
     };
     const zBase = wristZBase();
+    // 把整体平移放到 group 上，子 mesh 用局部 z=0，
+    // 这样 wristGroup.rotation.y 的旋转轴正好是腕托中心（X=0, Z=zBase）
+    wristGroup.position.z = zBase;
     if (P.wristStyle === 'full') {
-      const m = mk(P.wW / 2, P.wD / 2, 0, zBase);
-      deformKidney(m.geometry, P.wMorph, P.wMorphRot);
+      const m = mk(P.wW / 2, P.wD / 2, 0, 0);
+      deformKidney(m.geometry, P.wMorph);
+      // 整体腕托绕竖直轴旋转（肾型形状不变，单纯旋转），轴过腕托中心
+      wristGroup.rotation.y = THREE.MathUtils.degToRad(P.wMorphRot);
     } else {
       const rot = THREE.MathUtils.degToRad(P.wRot);
-      const l = mk(P.wBW / 2, P.wD / 2, -P.wGap / 2, zBase,  rot);
-      const r = mk(P.wBW / 2, P.wD / 2,  P.wGap / 2, zBase, -rot);
+      const l = mk(P.wBW / 2, P.wD / 2, -P.wGap / 2, 0,  rot);
+      const r = mk(P.wBW / 2, P.wD / 2,  P.wGap / 2, 0, -rot);
       deformEgg(l.geometry, P.wEgg);
       deformEgg(r.geometry, P.wEgg);
     }
@@ -1199,8 +1197,8 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
     if (!isClassic && curveEdit) setCurveEdit(false);
   };
   refreshShapeUI();
-  slider(el, '厚度', 2, 14, 0.5, () => P.thick, v => { P.thick = v; rebuild(); });
-  slider(el, '边缘倒角', 0.5, 8, 0.5, () => P.bevel, v => { P.bevel = v; rebuild(); });
+  slider(el, '厚度', 0, 10, 0.1, () => P.thick, v => { P.thick = v; rebuild(); });
+  slider(el, '边缘倒角', 0, 8, 0.1, () => P.bevel, v => { P.bevel = v; rebuild(); });
   checkRow(el, '边缘随正面整体着色', () => P.edgeSame, v => { P.edgeSame = v; if (edgeColorRow) edgeColorRow.style.display = v ? 'none' : ''; rebuild(); });
   const edgeColorRow = colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; rebuild(); });
   if (P.edgeSame && edgeColorRow) edgeColorRow.style.display = 'none';
@@ -1220,7 +1218,7 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   rows.h     = slider(el, '隆起高度', 5, 42, 0.5, () => P.wH, v => { P.wH = v; rebuild(); });
   rows.w     = slider(el, '腕托宽度', 60, 260, 1, () => P.wW, v => { P.wW = v; rebuild(); });
   rows.morph = slider(el, '肾形程度', 0, 1.5, 0.01, () => P.wMorph, v => { P.wMorph = v; rebuild(); });
-  rows.morphRot = slider(el, '肾形朝向°', -180, 180, 1, () => P.wMorphRot, v => { P.wMorphRot = v; rebuild(); });
+  rows.morphRot = slider(el, '腕托旋转°', -180, 180, 1, () => P.wMorphRot, v => { P.wMorphRot = v; rebuild(); });
   rows.bw    = slider(el, '单球宽度', 40, 150, 1, () => P.wBW, v => { P.wBW = v; rebuild(); });
   rows.rot   = slider(el, '双球旋转°', -60, 60, 1, () => P.wRot, v => { P.wRot = v; rebuild(); });
     rows.egg   = slider(el, '鹅蛋度', -0.45, 0.45, 0.01, () => P.wEgg, v => { P.wEgg = v; rebuild(); });
