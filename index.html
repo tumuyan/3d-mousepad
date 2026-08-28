@@ -1091,6 +1091,7 @@ function buildWrist(topY) {
 function rebuild() {
   const topY = buildPad();
   buildWrist(topY);
+  markOverlayDirty();              // 几何变了：锚点世界坐标、顶面高度都可能跟着变
   if (curveEdit) setEditOrtho();   // 几何/尺寸变了，正交视口要跟着缩放
 }
 
@@ -1582,7 +1583,14 @@ var curveEdit = false;       // var：UI 构建早于本模块，需避免 TDZ
 let cvHover = null;          // {i, kind:'anchor'|'h1'|'h2'}
 let cvDrag = null;
 let prevViewPos = null;      // 进入编辑前的相机状态，退出时恢复
-let lastCamKey = '';         // 相机位姿指纹，用于按需重绘叠加层
+let overlayDirty = false;    // 脏标记：为真时主循环重绘一次叠加层（变化入口显式置脏）
+let lastOverlayKey = '';     // 叠加层输入指纹：脏标记的兜底，防止漏置脏时锚点停在旧位置
+let cvW = 0, cvH = 0;        // 叠加层 CSS 像素尺寸，由 resizeCurveLayer() 缓存（避免每帧读布局）
+
+// 任何会改变叠加层画面的入口都要置脏：几何（rebuild）、视锥（setEditOrtho）、
+// 画布尺寸与变换（resizeCurveLayer）。置脏只保证"尽快重绘"，不保证"不漏"，
+// 漏置脏的兜底由 overlayKey() 指纹负责，二者缺一不可。
+function markOverlayDirty() { overlayDirty = true; }
 
 // 编辑态专用正交相机：根据 stage 当前宽高 + 鼠标垫世界包围计算 left/right/top/bottom，
 // 让 Shape 坐标→屏幕坐标严格 1:1 映射，避免 Perspective 投影 + 退化 lookAt 带来的对位误差。
@@ -1635,6 +1643,7 @@ function setEditOrtho() {
   }
   orthoCam.updateProjectionMatrix();
   orthoCam.updateMatrixWorld(true);
+  markOverlayDirty();   // 视锥变了：锚点屏幕坐标必然变（含"只平移不缩放"的情形）
 }
 
 function setCurveEdit(on) {
@@ -1672,9 +1681,12 @@ function setCurveEdit(on) {
 
 function resizeCurveLayer() {
   const dpr = Math.min(2, devicePixelRatio || 1);
-  curveLayer.width = stage.clientWidth * dpr;
-  curveLayer.height = stage.clientHeight * dpr;
+  // 缓存 CSS 尺寸：绘制与指纹都用它，保证两者读取的是同一个值，也免去每帧读布局
+  cvW = stage.clientWidth; cvH = stage.clientHeight;
+  curveLayer.width = cvW * dpr;
+  curveLayer.height = cvH * dpr;
   cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  markOverlayDirty();   // 画布尺寸/变换变了：整层内容作废，必须重绘
 }
 
 // 模型形状坐标 (x, y) → 屏幕像素。
@@ -1689,8 +1701,9 @@ const shapeTopY = () => P.thick / 2 + P.bevel;
 function shapeToScreen(x, y) {
   const cam = orthoCam || camera;
   const v = new THREE.Vector3(x, shapeTopY(), -y).project(cam);
-  return { x: (v.x * 0.5 + 0.5) * stage.clientWidth,
-           y: (-v.y * 0.5 + 0.5) * stage.clientHeight };
+  // 用 resizeCurveLayer() 缓存的 cvW/cvH，与 drawCurveOverlay / overlayKey 严格同源
+  return { x: (v.x * 0.5 + 0.5) * cvW,
+           y: (-v.y * 0.5 + 0.5) * cvH };
 }
 // 屏幕像素 → 模型形状坐标（射线与顶面平面求交）
 function screenToShape(e) {
@@ -1706,13 +1719,44 @@ function screenToShape(e) {
   return { x, y };
 }
 
+// 指纹量化：世界单位约等于 mm，取 1e-6 精度足够区分任何一次可见变化；NaN/undefined 归 0。
+const ovQ = n => Math.round(n * 1e6) | 0;
+
+// 叠加层重绘判据：把 drawCurveOverlay() 的**全部输入**压成一个字符串指纹。
+// 旧实现只读 orthoCam.projectionMatrix.elements[0]（X 方向缩放），漏了两类变化：
+//   1) 视锥只平移不缩放 —— 中心平移体现在 elements[12]/[13]，elements[0] 不变；
+//   2) 几何变化 —— 锚点世界坐标、顶面高度 shapeTopY()（= P.thick/2 + P.bevel）与
+//      投影矩阵无关，改这两个滑条时矩阵完全不变。
+// 因此这里逐项列出：画布尺寸、视锥缩放与平移、顶面高度、hover 高亮、全部锚点几何。
+// 只要 drawCurveOverlay 引入新的输入，必须同步加进指纹，否则会重新出现静默失效。
+function overlayKey() {
+  let s = cvW + 'x' + cvH + '|' + ovQ(shapeTopY()) + '|';
+  if (orthoCam) {
+    const e = orthoCam.projectionMatrix.elements;
+    // [0]/[5] = X/Y 缩放，[12]/[13] = 视锥中心平移
+    s += ovQ(e[0]) + ',' + ovQ(e[5]) + ',' + ovQ(e[12]) + ',' + ovQ(e[13]) + '|';
+  }
+  s += (cvHover ? cvHover.i + ':' + cvHover.kind : '-') + '|';
+  const c = P.classicCtrl;
+  if (!Array.isArray(c)) return s + 'null';
+  for (let i = 0; i < c.length; i++) {
+    const p = c[i], h1 = p.h1 || {}, h2 = p.h2 || {};
+    s += (p.pin ? '1' : '0') + ovQ(p.x) + ovQ(p.y)
+       + ovQ(h1.x) + ovQ(h1.y) + ovQ(h2.x) + ovQ(h2.y) + ';';
+  }
+  return s;
+}
+
 // 编辑模式叠加层：只画锚点 / 切线手柄，不画轮廓线。
 // 轮廓形状直接由 3D 渲染结果呈现（改用渲染效果判断外观），叠加层只负责交互。
 // 历史备注：此前曾从 padMesh 顶面提取闭合边界边绘制蓝色轮廓线，因与渲染外形重复而移除。
 function drawCurveOverlay() {
+  if (curveEdit && (!cvW || !cvH)) resizeCurveLayer();  // 兜底：进入编辑前画布尺寸尚未缓存
+  overlayDirty = false;      // 无论是否真的绘制，脏标记在此消费掉
+  lastOverlayKey = overlayKey();
   if (!curveEdit) return;
   const c = P.classicCtrl;
-  cctx.clearRect(0, 0, stage.clientWidth, stage.clientHeight);
+  cctx.clearRect(0, 0, cvW, cvH);
   if (!Array.isArray(c) || !c.length) return;
 
   // 手柄连线与控制点
@@ -2171,16 +2215,11 @@ resize();
   // 编辑态：用正交相机渲染（与覆盖层投影严格同源）
   const renderCam = curveEdit && orthoCam ? orthoCam : camera;
   renderer.render(scene, renderCam);
-  // 相机/投影变动时同步覆盖层（拖动、滑条、resize 都会改 orthoCam 投影矩阵）
-  if (curveEdit) {
-    const k = orthoCam.projectionMatrix.elements[0].toFixed(5);
-    if (k !== lastCamKey) { lastCamKey = k; drawCurveOverlay(); }
-  }
-  // 相机移动时同步叠加层（编辑态下相机被锁定，此处仅覆盖过渡与视图切换）
-  if (curveEdit) {
-    const k = renderCam.position.toArray().join(',') + '|' + renderCam.projectionMatrix.elements[0];
-    if (k !== lastCamKey) { lastCamKey = k; drawCurveOverlay(); }
-  }
+  // 叠加层按需重绘：每帧最多一次。
+  //   overlayDirty  —— 常规路径，由 rebuild / setEditOrtho / resizeCurveLayer 显式置脏；
+  //   overlayKey()  —— 兜底，直接比对绘制输入（含几何），任何漏置脏的变化也能捕获。
+  // 旧实现是两段各自比较、且共用同一把 lastCamKey 而格式不同，导致每帧必重绘 2 次。
+  if (curveEdit && (overlayDirty || overlayKey() !== lastOverlayKey)) drawCurveOverlay();
 })();
 </script>
 <div id="toast-wrap"></div>
