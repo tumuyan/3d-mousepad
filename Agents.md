@@ -1,85 +1,107 @@
 # Agents.md — 3D MousePad Studio 协作规范
 
-本文件记录本项目中用户与 AI 协作用的**统一术语**，避免后续沟通和代码改动时名词错位。
+面向后续开发的**规范性文档**：统一术语、记录必须遵守的约束与易错点。
+写法约定：只陈述「当下的规则是什么、为什么」，不记录变更过程与历史。
 
-## 1. 术语对照表（用户视角 ↔ 代码）
+## 1. 术语对照（用户视角 ↔ 代码）
 
-| 用户视角术语 | 代码对应 | 说明 |
+| 用户术语 | 代码 | 说明 |
 | --- | --- | --- |
-| **鼠标垫外形 / 鼠标垫（模型）** | `padMesh`（`THREE.Mesh` + `ExtrudeGeometry(makeClassicShape())`） | 3D 场景中的鼠标垫顶面 / 侧面 / 底面，是用户看到的"鼠标垫"本体 |
-| **控制点叠加层** | `drawCurveOverlay()` 中画出的**黑色锚点圆**（描边 `#4da3ff`）+ **橙色手柄方块**（`#ff7a59`，hover 变 `#ffd166`）+ 手柄连线（`#6b7480`） | 编辑模式下覆盖在 3D 场景上的可拖拽控制点。⚠️**不画轮廓线**：轮廓外形直接看 3D 渲染结果（2026-08-28 用户决定：只需操作锚点，用渲染效果判断外观） |
-| **经典形状 / 经典款** | `P.shape === 'classic'`（下拉框中文标签 "经典"） | 鼠标垫外形采用经典贝塞尔变形的形状（用户明确：此模式叫"经典"，不叫 hug） |
-| **圆角矩形** | `P.shape === 'rect'` | 默认 pad 形状 |
-| **椭圆 / 胶囊形** | `P.shape === 'ellipse' / 'stadium'` | 其他可选形状 |
-| **上半轮廓** | `makeClassicShape()` 中由 `classicCtrl` 贝塞尔链生成的部分 | 用户可拖动锚点 / 手柄改动的部分 |
-| **下半轮廓 / 腕托足迹** | `makeClassicShape()` 中由 `bottomPts`（腕托包裹足迹）生成的部分 | 由参数 `wMargin / wPos / wD / wristStyle` 等控制，**不接受控制点拖拽** |
-| **腕托 cushion** | `wristGroup`（`SphereGeometry` 缩放的椭球） | 鼠标垫上方的软垫可视化，**编辑模式也始终显示**（呈现真实渲染状况），覆盖层（曲线/锚点）绘制在 3D 之上仍可拖拽 |
-| **编辑模式 / 编辑轮廓** | `curveEdit = true` | 经典形状的"鼠标垫外形"选项组内**第二项**，复选框"编辑轮廓（拖拽贝塞尔控制点）"，**默认不勾选** |
-| **正交相机** | `orthoCam`（`OrthographicCamera`） | 编辑模式专用相机，与 `renderer.render` 共用；`shapeToScreen` 也用此相机投影 shape 边界到屏幕 |
-| **配置导出 / 导入** | `serializeConfig(withTextures)` / `importConfigFile(file)` | 把 `P`（参数）序列化进 `config.json`（ZIP 内）；`withTextures=true` 时额外把 `P.t1/P.t2` 贴图以 `tex1.*`/`tex2.*` 打包进 ZIP。`importConfigFile` 支持 `.json` 与 `.zip` 两种格式 |
-| **ZIP 打包 / 解包** | `makeZip(files)` / `parseZip(u8)`（含 `crc32`） | 纯前端用 `CompressionStream`/`DecompressionStream` 实现，无第三方依赖；文件头存 `config.json` + 可选 `tex1.*`/`tex2.*` |
-| **贴图拖拽区预览** | `setDZPreview(dz, url, onClear)`（DOM 元素，非字符串） | 在 `#dz1`/`#dz2` 显示已上传贴图的缩略图与清除按钮；第一个参数必须是 DOM 元素（`getElementById('dz1')`），传字符串会 `innerHTML` 报错 |
-| **贴图加载** | `makeTex(url, cb)` | 第二个参数是**加载完成回调 `cb(t)`**，不是变换参数；误把 `P.t1` 当第二参会导致 `cb is not a function` |
-| **剪贴板粘贴按钮** | `#paste1` / `#paste2`（`.paste-btn`） | 位于左侧贴图区每行最左、与右侧 dropzone 等高的 `📋` 小方块。点击调用 `navigator.clipboard.read()` 主动读取剪贴板图片，分别填入 `tex1`/`tex2`。按钮在 `.dz-wrap` 内、作为 dropzone 的**兄弟节点**（非子节点），不受 `setDZPreview`/`resetDZ` 的 `innerHTML` 重写影响，**常驻显示**（上传/清除后不消失） |
-| **Toast 提示** | `toast(msg, type, ms)` | 轻量非阻塞提示，替代 `alert()`。`type` 为 `''`/`'ok'`/`'err'`：`err` 显示为红字，其余普通浅色文字，边框统一无特殊设计（不再用绿/红边）。底部居中淡入、`ms` 毫秒后（默认 2600）点击或超时自动淡出移除。所有用户反馈（导入成功/失败、剪贴板错误等）统一走 toast，**禁止新增 `alert()`** |
+| 鼠标垫（模型） | `padMesh`（`ExtrudeGeometry(makeShape())`） | 垫身本体，与腕托是两个独立对象 |
+| 腕托 cushion | `wristGroup`（缩放的 `SphereGeometry`） | 始终可见（含编辑模式） |
+| 经典形状 / 经典款 | `P.shape === 'classic'` | 上半轮廓由贝塞尔锚点决定。代码中一律用 `'classic'`，**不要用 `hug`** |
+| 圆角矩形 / 椭圆 / 胶囊形 | `'rect'` / `'ellipse'` / `'stadium'` | 其余形状 |
+| 上半轮廓 | `makeClassicShape()` 中由 `classicCtrl` 生成的贝塞尔部分 | 锚点可拖拽 |
+| 下半轮廓 / 腕托足迹 | `makeClassicShape()` 中由 `bottomPts` 生成的部分 | 由 `wMargin / wPos / wD / wristStyle` 决定，**不接受拖拽** |
+| 控制点叠加层 | `drawCurveOverlay()` 画的黑色锚点圆 + 橙色手柄方块 | 只画锚点与手柄，**不画轮廓线**——外形看 3D 渲染结果 |
+| 编辑模式 | `curveEdit = true` | 「鼠标垫外形」组第二项，默认不勾选 |
+| 正交相机 | `orthoCam` | 编辑模式专用，与 `shapeToScreen` 投影同源，保证 1:1 |
+| 配置导出 / 导入 | `serializeConfig()` / `importConfigFile()` | 支持 `.json` 与 `.zip`（ZIP 内含贴图） |
+| ZIP 打包 / 解包 | `makeZip()` / `parseZip()` | 纯前端 `CompressionStream` 实现，零依赖 |
+| 导出模型 | `exportModel3D('glb'\|'stl'\|'obj')` | 见 §4 导出 |
+| 模型渲染图 | `exportModelPNG()` | 见 §4 导出 |
+| Toast 提示 | `toast(msg, type, ms)` | 所有用户反馈统一走它，**禁止新增 `alert()`** |
 
-## 2. 关键代码定位
-- `makeClassicShape()` — 生成经典形状的完整 `THREE.Shape`，上半贝塞尔 + 下半足迹折线
-- `wristFootprint(kind, opts)` — 采样腕托「原始足迹」折线（右→左）。⚠️ 变换链必须与 3D 腕托**逐字一致**：单位球 → 变形 → 按半轴缩放 → 绕 y 轴旋转（`noRot=true` 可忽略旋转角）。`kind==='full'` 时弧段起点用 `t0 = atan2(ry*s, rx*c)`，保证两端接缝落在旋转后轮廓的最宽点
-- `buildFootprint(out, noRot)` — 生成一段完整足迹（含 `wMargin` 外扩）写入 `out`。`makeClassicShape()` 调两次：`noRot=false` 出真实轮廓，`noRot=true` 出**旋转无关的布局基准**（垫身总长 `padH` + 腕托 z 基准 `classicZBaseCache`）
-- `setEditOrtho()` — 计算正交视锥：`L/R/T/B` 基于 `makeClassicShape()` 真实 bbox，中心对齐 shape 几何中心
-- `shapeToScreen(shapeX, shapeY)` — 把 shape 2D 坐标投影到屏幕像素，矩阵来源与 3D 渲染相同
-- `drawCurveOverlay()` — 编辑模式下在 `curveLayer` 画**锚点 + 切线手柄**（仅交互元素）。⚠️**已移除蓝色轮廓线**（曾从 `padMesh` 顶面提取闭合边界边绘制，与 3D 渲染外形重复，2026-08-28 移除；相关 `?diag` 对比调试块一并删除）。轮廓外观改由 `padMesh` 渲染结果直接呈现
-- `buildPad()` — `P.shape === 'classic'` 时调用 `makeClassicShape()` 构建 `padMesh`（编辑态也保留倒角 `bevelEnabled: P.bevel>0`，顶面在世界 Y = `P.thick/2 + P.bevel`）
-- `buildWrist(topY)` — 构建腕托 cushion，**始终 `wristGroup.visible = true`**（编辑模式也显示，以呈现真实渲染）
-- `setCurveEdit(on)` — 进入/退出编辑模式，切换 `curveEdit`、正交相机渲染、`controls.enabled`、覆盖层显示（不再控制腕托显隐）
-- `classicCtrl`（即 `P.classicCtrl`）— 上半贝塞尔锚点链数组，结构 `[{ x, y, h1:{x,y}, h2:{x,y}, pin?:true }]`。⚠️**运行时坐标一律用顶层 `{x,y,h1,h2}`**（与 `bakeClassicCtrl`/`makeClassicShape` 约定一致），**不要写成 `{p:{x,y}, h1, h2}` 嵌套**——后者是旧版导出格式，会被 `ensureClassicCtrl` 判为无效而退回程序化默认。首尾两点为 `pin`（接缝，切线由 `ensureClassicCtrl` 平移并重算），中间锚点可拖拽
-- `DEFAULT_CLASSIC_CTRL` — 默认锚点常量（脚本靠前定义），存当前"出厂默认外形"的锚点链（当前取自 `3d_MousePad_Template`）。`P.classicCtrl` 默认 = `structuredClone(DEFAULT_CLASSIC_CTRL)`；`重置锚点` 按钮也恢复到它。⚠️**锚点数量不固定**（取决于设计稿：典型为若干可拖拽中间点 + 首尾 `pin` 接缝点），不要假设或硬编码具体点数；改默认外形时直接整段复制设计稿的锚点 `x/y/h1/h2` 进此常量，**不要自创或增减点**（曾因自创多余接缝点导致默认样式与设计稿不符）
-- `bakeClassicCtrl` / `ensureClassicCtrl` / `autoSmoothClassicCtrl` — 锚点链的烘焙 / 复用 / 平滑函数
-- `norm2(x,y)` — **全局工具函数**（脚本靠前定义），返回归一化单位向量；`bakeClassicCtrl` / `ensureClassicCtrl` 的端点切线计算均依赖它
-- **经典形状端点切线（G1）**：`makeClassicShape()` 中 `dBLv` / `dBRv` 统一取"离开端点沿底轮廓向内"的方向（右→左），由 `bakeClassicCtrl` 取 `-dBLv` / `-dBRv` 作为两端贝塞尔手柄方向，保证左右下角关于竖直中轴**镜像对称、圆润衔接**。注意 `dBLv` 须用 `bottomPts[n-2] - pBL`（离开方向），误用 `pBL - bottomPts[n-2]`（进入方向）会导致一侧端点切线反向、出现折痕
-- `importConfigFile(file)` — 解析 `.json`/`.zip`，`Object.assign(P, cfg.params)` 恢复参数；随后必须调用 `rebuild()` + `refreshShapeUI()` + `refreshWristUI()` + `uiSyncers.forEach(f=>f())` + `syncTexUI('t1'/'t2')` 同步全部 UI 显隐与控件值
-- `uiSyncers` — **全局控件值同步器数组**：每个 `slider/colorRow/selectRow/checkRow` 注册一个把 `inp.value = get()` 的闭包；导入后遍历即可刷新所有滑条/下拉/复选框的数值，但**不负责显隐**
-- `refreshShapeUI()`（形状分组显隐）— 根据 `P.shape === 'classic'` 切换 `classicRows` / `nonClassicRows` 的 `.row` 显隐；导入时已调用 ✅
-- `refreshWristUI()`（腕托分组显隐）— 根据 `P.wristStyle`（none/full/balls）切换 `腕托宽度`/`肾形程度`/`单球宽度`/`双球旋转` 等行的显隐；导入时必须显式调用（曾漏掉导致款式切了但控件不显隐）
-- `colorRow()` **必须 `return row`**：`边缘同色` 勾选时隐藏的 `边缘颜色` 行依赖 `colorRow` 返回值；若漏写 `return row` 则 `edgeColorRow` 恒为 `undefined`、显隐完全失效（含导入后恢复）
+## 2. 单位约定
 
-## 3. 视觉一致性原则
-- **轮廓外形的唯一真相是 `padMesh` 的 3D 渲染结果**：`makeClassicShape()` → `ExtrudeGeometry` → `padMesh`，叠加层不再画轮廓线（2026-08-28 移除蓝线）。因此**不再存在「叠加层轮廓 vs 渲染轮廓」对不齐这类问题**
-- **锚点定位仍以顶面为准**：`shapeToScreen()` / `screenToShape()` 用 `shapeTopY() = P.thick/2 + P.bevel`（顶面高度），保证锚点圆与渲染出的顶面在同一平面上，拖拽手感与视觉一致
-- 鼠标垫颜色（材质色、贴图）由 `P.t1 / P.t2 / P.baseColor / P.padColor` 等参数控制
-- 编辑模式下也显示腕托 cushion、保留立体倒角，以呈现实际渲染状况（鼠标垫立体外观、腕托凸起、光照/贴图）；锚点/手柄覆盖层始终绘制在 3D 之上，拖拽编辑不受影响
-- 腕托与倒角在所有模式下均显示，不存在"退出编辑才出现"的状态
+**所有长度参数与世界坐标一律为毫米，1 世界单位 = 1mm**，无全局缩放。
+常量 `MM_PER_UNIT = 1` 是换算的唯一出处；同类量级参照：`shadowPlane` 2000、光半径 500、阴影相机 ±320、相机 `near 1 / far 6000`、`PERSP_POS` 距离 470。
 
-## 4. 修改/调试注意事项
-- **不要**在浏览器跑老版本 JS 后判定 bug；项目已加 `<meta http-equiv="Cache-Control" content="no-cache">`，但用户硬刷新（Ctrl+Shift+R）才能确保拿到最新代码
-- **不要**把 `padMesh` 顶面与 `wristGroup` cushion 混淆；cushion 是 `SphereGeometry`，顶面 `padMesh` 是 `ExtrudeGeometry`，**两个独立对象**
-- 修改 `setEditOrtho` 后需要让 `rebuild()` / `resize()` / 用户操作触发重新计算，否则视锥用旧值
-- `shapeToScreen` 与 `renderer.render(scene, orthoCam)` 始终用同一 `orthoCam` 对象，保证 1:1
-- 经典形状模式在代码中用英文值 `'classic'`，**不要使用 `hug`**（用户要求此模式叫"经典"）
-- `norm2(x,y)` 是**全局函数**（脚本靠前 `const norm2 = ...`）；任何需要归一化方向向量的代码都应复用它，不要重复定义局部版本（曾因在 `bakeClassicCtrl` 内重复定义、而他处引用不到导致 `ReferenceError: norm2 is not defined` 使 `rebuild()` 崩溃、页面全黑）
-- **经典模式 UI 选项约定**：`宽度` / `圆角` 滑条归入 `nonClassicRows`，经典模式自动隐藏（经典款由腕托足迹 + 贝塞尔锚点决定，这两个参数无效）；"编辑轮廓（拖拽贝塞尔控制点）"在"鼠标垫外形"组内为**第二项、默认不勾选**；`P.edgeSame` 默认 `true`（边缘同色勾选）
-- 经典模式"鼠标垫外形"选项组顺序：`腕托顶距` → `编辑轮廓` → `外形超出腕托`（三项）。**`编辑轮廓` 行右侧直接挂一个 `重置锚点` 按钮**（不再有独立的"轮廓锚点/重置为默认形状"行）；点击把 `P.classicCtrl` 重置为 `DEFAULT_CLASSIC_CTRL` 并 `refreshShapeUI() + rebuild()`。`checkRow` 已被改为返回 row 元素（而非 input），以便在该行内 `appendChild` 按钮
-- **导入配置后 UI 同步约定**：任何"依赖 `P` 值决定控件显隐/可见性"的逻辑，必须能在导入路径上被触发。`uiSyncers` 只同步**数值**（`inp.value`），不处理显隐。当前导入函数已统一调用 `refreshShapeUI()` + `refreshWristUI()` + `uiSyncers.forEach` + `syncTexUI`；若新增"根据某参数隐藏某行"的逻辑，要么挂进对应的 `refreshXxxUI()`（导入已调用），要么 push 进 `uiSyncers` 里做显隐。**曾因漏调 `refreshWristUI` 导致导入后款式切了但同组控件不显隐，以及 `colorRow` 漏 `return row` 导致边缘颜色行永远无法隐藏/恢复**
-- **贴图导入调用签名**：`makeTex(url, cb)`（cb 为回调，非变换参数）；`setDZPreview(dz, url, onClear)` 的 `dz` 必须是 DOM 元素（`getElementById('dz1')`），二者传错类型会分别报 `cb is not a function` / `Cannot create property 'innerHTML' on string`
-- **剪贴板粘贴按钮结构约定**：`📋` 按钮（`#paste1`/`#paste2`，class `paste-btn`）是 `.dz-wrap` 内、**dropzone 之前的兄弟节点**，用绝对定位固定在 dropzone 左侧、等高。⚠️**不要把它放回 dropzone 内部**——`setDZPreview`（`dz.innerHTML=''`）与 `resetDZ`（`innerHTML=html`）会重写 dropzone 内容，若按钮是子节点会被一起删掉、上传/清除后不再显示。按钮绑定在 `bindDropzone()` 内：`document.getElementById('paste'+dzId.slice(2))`，点击读取 `navigator.clipboard.read()` 取 `image/*` 类型 `Blob` 走 `loadImage`。`navigator.clipboard.read()` 仅在 `https`/`localhost` 安全上下文可用，`file://` 直接打开会为 `undefined`（已 `if(!navigator.clipboard)` 兜底提示）。按钮**不要加 `.btn` 类**（否则被全局 `.btn` 的 `width:100%`/粉色渐变/`margin-top` 覆盖），其样式由 `button.paste-btn` 独立声明
-- **用户反馈统一用 toast**：所有面向用户的提示（导入成功/失败、剪贴板不支持/无图/异常等）一律调用 `toast(msg, type, ms)`（`type` 取 `''`/`'ok'`/`'err'`：`err` 红字，其余普通文字，**边框无特殊设计**），**严禁新增 `alert()`**。`toast` 为非阻塞底部居中提示，自动淡出；如需阻塞式确认勿用 `alert`，应自建模态
+⚠️ 倒角会让成品大于参数（`bevelSize = bevel × 0.9` 向外扩、`bevelThickness` 上下各加一层）：
 
-- **`ensureClassicCtrl` 的 stale 判断**：只要求每个点 `x/y` 有限；若某点"部分有手柄"（`p.h1||p.h2` 但缺其一）才判无效。中间接缝锚点可**完全无 `h1/h2`**（合法），返回前会由 `ensureClassicCtrl` 自动补一对平滑共线手柄，避免 `makeClassicShape()` 的贝塞尔链读到 `undefined` 手柄。**曾误判"无 h 的点"为 stale 而退回程序化默认形状**，导致默认外形不符设计稿
-- **经典轮廓导入兼容**：`importConfigFile` 已兼容旧版 `{p:{x,y}, h1, h2}` 嵌套格式（自动提升为顶层 `{x,y,h1,h2}`）。但优先保持运行时顶层格式；导入任何顶层格式的设计稿后，其外形应与默认外形（同一 `DEFAULT_CLASSIC_CTRL`）一致
-- **⚠️ 足迹变换顺序：先缩放后旋转，不可颠倒**：3D 腕托的局部矩阵是 `T·R·S`（`mesh.scale` 先作用、`rotation.y` 后作用），`wristFootprint()` 必须同样「缩放 → 旋转」。**曾写成在单位空间里先旋转后缩放**，对非圆截面（rx≠rz）会产出与真实 cushion 完全不同的轮廓（整体款 45° 时偏差达 34 单位），且旧代码整体款还把旋转方向写反（`wristGroup.rotation.y` 是 +θ，足迹算的是 −θ）
-- **⚠️ 垫身总长/腕托位置必须取「未旋转」基准**：`padH` 与 `classicZBaseCache` 只能由 `buildFootprint(_, true)`（忽略旋转角）的足迹跨度推算。**曾直接用旋转后足迹的纵向跨度**，而该跨度随旋转角变化（侧缘点绕腕托中心摆动，整体款 0°→90° 跨度 36→99）→ 旋转时垫身被拉长/缩短、腕托整体前后平移（整体款 0°→90° 腕托中心位移 81）。改完这两项后：旋转仅改变包裹轮廓外形，腕托中心与总长恒定，整体款因「旋转后 cushion 确实更深」而保留的底部加深属物理必然
+| 项 | 关系 |
+| --- | --- |
+| 成品外廓 | `基础宽度`/`基础长度` + `1.8 × 边缘倒角` |
+| 成品总厚 | `基础厚度` + `2 × 边缘倒角` |
 
-## 5. 仓库结构
+默认参数下实际成品为 **235.4 × 270.4 × 7 mm**。因此这三个控件的显示名带「基础」前缀（指倒角前的轮廓值），悬停提示写明换算公式。
+做切割线 / 印刷出血时须先明确取「顶面印刷区」还是「外轮廓剪影」——顶面比外廓再内缩 `bevelSize`。
+⚠️ 不要为了让参数等于成品而改几何，那会让所有已有设计的外观整体缩小。
+
+## 3. 关键代码定位
+
+**几何**
+- `makeShape()` → `makeClassicShape()`：生成垫身 `THREE.Shape`（上半贝塞尔 + 下半足迹折线）
+- `buildPad()` / `buildWrist(topY)`：构建 `padMesh` / `wristGroup`；顶面高度 = `P.thick/2 + P.bevel`
+- `wristFootprint(kind, opts)`：采样腕托足迹（右→左）。⚠️ 变换链必须与 3D 逐字一致：**单位球 → 变形 → 缩放 → 绕 y 旋转**，`noRot=true` 忽略旋转角
+- `buildFootprint(out, noRot)`：`makeClassicShape()` 调两次 —— `false` 出真实轮廓，`true` 出旋转无关的布局基准（垫身总长 + 腕托 z 基准）
+- `rebuild(padOnly)`：`padOnly` 仅在改动只影响 `P.classicCtrl` 时使用（足迹不读锚点，故可跳过腕托）。新增 `padOnly` 调用点前须重新核对依赖
+
+**锚点（经典形状）**
+- `P.classicCtrl`：`[{ x, y, h1:{x,y}, h2:{x,y}, pin?:true }]`，首尾 `pin` 为接缝点。**运行时一律用顶层 `{x,y,h1,h2}`**；`{p:{x,y}}` 是旧版导出格式，仅导入时兼容
+- `DEFAULT_CLASSIC_CTRL`：出厂默认锚点链，`重置锚点` 恢复到此常量。⚠️ 点数不固定，不要硬编码；改默认外形时整段复制设计稿的锚点，不要自创或增减点
+- `bakeClassicCtrl` / `ensureClassicCtrl` / `autoSmoothClassicCtrl`：烘焙 / 校验 / 平滑
+- `norm2(x,y)`：全局归一化工具函数，任何需要单位向量的地方复用它，不要重复定义
+- 端点切线（G1）：`dBLv`/`dBRv` 须取「离开端点沿底轮廓向内」的方向（即 `bottomPts[n-2] - pBL`），反向会导致一侧出现折痕
+
+**编辑模式**
+- `setEditOrtho()`：按 shape 真实 bbox 计算正交视锥，中心对齐几何中心。改后须由 `rebuild()` / `resize()` 触发重算
+- `shapeToScreen()` / `screenToShape()`：以顶面 `P.thick/2 + P.bevel` 为基准投影
+- `setCurveEdit(on)`：切换 `curveEdit`、正交渲染、`controls.enabled`、覆盖层显隐
+
+**UI / 配置**
+- `uiSyncers`：控件**数值**同步器数组，导入配置后遍历刷新。⚠️ 只同步值，**不处理显隐**
+- `refreshShapeUI()` / `refreshWristUI()`：分组**显隐**。导入路径必须调用，新增「按参数隐藏某行」的逻辑要挂进这里
+- `colorRow()`、`checkRow()` **必须 `return row`**，否则依赖返回值的行（如边缘颜色）无法控制显隐
+- `slider(parent, label, min, max, step, get, set, note)`：`note` 为可选悬停说明
+- `.row label` 固定 `flex:0 0 64px`，标签不超过 5 个汉字，否则挤压滑条
+- 经典模式「鼠标垫外形」组顺序：`腕托顶距` → `编辑轮廓`（默认不勾选）→ `外形超出腕托`；`重置锚点` 按钮挂在「编辑轮廓」行右侧，恢复 `DEFAULT_CLASSIC_CTRL`
+- `#topbar .dd-menu` 必须左对齐（`.dd-menu` 默认 `right:0` 是为右上角 `#toolbar` 设计的）
+
+## 4. 导出
+
+**模型渲染图 `exportModelPNG()`**
+保持当前视角（相机位置/视锥/zoom/aspect 全不动），用 `cam.setViewOffset()` 把渲染视窗开在模型的投影矩形上，再按 alpha 裁掉残余透明边。
+- `modelNDCRect()`：遍历全部顶点投影得 NDC 包围盒（顶点级，比 `Box3` 贴合剪影）；顶点跨近平面时返回 `null`，退化为整屏导出
+- ⚠️ 不要用世界 AABB 的 `size.x/size.y` 反推取景：鼠标垫躺在 XZ 平面，`size.y` 只是厚度，`size.x/size.z` 也不对应屏幕横竖方向
+- 输出分辨率 = 投影矩形的屏幕像素 × `P.exportScale`，长边上限 8192（浏览器画布上限）
+
+**3D 模型 `exportModel3D(kind)`**
+- `loadExporter(kind)`：按需动态 `import()`（走 importmap 的 `three/addons/` 前缀）并缓存，specifier 必须写**字面量**
+- `buildExportRoot({ bakeUV, unit })`：只含 `padMesh` + 可见 `wristGroup`，几何 `clone()` 后烘焙世界矩阵（输出节点无变换）；材质去重，命名 `PadTop`/`PadEdge`/`WristRest`，节点 `Pad`/`WristRest_n`
+- ⚠️ 腕托的 `clippingPlanes` 只在渲染期丢弃片元，必须经 `clipYOfMats` + `flattenBelowY` 落实到顶点，否则腕托会从垫身底部整个穿出。新增带 clipping 的材质要确认能被 `clipYOfMats` 识别（目前只认水平向上的平面）
+- ⚠️ 越界顶点要**压平**而非删面——删面会在底部开口、slicer 判为非法网格。压平后须重算法线并把零长度法线补成 `(0,-1,0)`（glTF 要求单位法线）
+- 单位由 `MM_PER_UNIT` 推导：STL/OBJ = 1mm，GLB = 1m（`UNIT_M = MM_PER_UNIT/1000`）。不要写死
+- GLB 材质是近似：页面的 `onBeforeCompile` 混合与 `cutout` 镂空无法写进 glTF，退化为 `map × color` + 单一 alpha。贴图**定位**精确（`bakeUVTransform` 烘焙 `texture.matrix` 进 uv，绕开 `KHR_texture_transform` 不支持 `center`），但混合强度会丢失
+- `disposeExportRoot()`：释放克隆出的 geometry / material / texture
+
+## 5. 易错点
+
+- `padMesh` 与 `wristGroup` 是两个独立对象，不要混淆
+- 足迹变换**先缩放后旋转**，不可颠倒（3D 局部矩阵是 `T·R·S`）；垫身总长与腕托位置只能取**未旋转**基准 `buildFootprint(_, true)`，否则旋转会带着垫身拉长、腕托平移
+- 导入配置的完整同步链：`rebuild()` + `refreshShapeUI()` + `refreshWristUI()` + `uiSyncers.forEach()` + `syncTexUI('t1'/'t2')`
+- `makeTex(url, cb)` 第二参是加载回调；`setDZPreview(dz, ...)` 第一参必须是 DOM 元素
+- `📋` 粘贴按钮（`.paste-btn`）是 dropzone 的**兄弟节点**，不能放进 dropzone 内部（`innerHTML` 重写会删掉它）；不要加 `.btn` 类
+- 调试前硬刷新（Ctrl+Shift+R），避免用旧版 JS 判定问题
+- 腕托与倒角在所有模式下均显示，不存在「退出编辑才出现」的状态
+
+## 6. 仓库结构
+
 ```
-index.html       主程序（纯前端单文件，Three.js 经 importmap 从 CDN 加载，无需构建）
-server.js        本地静态服务器：node server.js [端口默认5213]
-README.md        项目说明与运行方式
-package.json     （可选）仅声明 playwright 等调试用依赖；运行项目不依赖 npm 包
-package-lock.json （可选）npm 锁文件
-Agents.md        本协作规范
-.gitignore       
+index.html   主程序（纯前端单文件，Three.js 经 importmap 从 CDN 加载）
+server.js    本地静态服务器：node server.js [默认端口 5213]
+README.md    项目说明与运行方式
+package.json 仅声明 playwright 等调试依赖，运行项目不依赖 npm 包
+Agents.md    本文件
 ```
-- 运行项目**不需要** `node_modules`：`index.html` 通过 CDN 加载 Three.js，直接浏览器打开或 `npx serve .` 即可
-- `package.json` / `package-lock.json` 仅用于需要时 `npm i` 安装 playwright 做调试验证，非运行依赖
-- `snap*.yaml`、`*_diag*`、`*.png`、`server.log` 等为调试产物，已纳入 `.gitignore` 不应提交
+- 调试产物 `snap*.yaml`、`*_diag*`、`*.png`、`server.log` 已在 `.gitignore` 中，不应提交

@@ -124,6 +124,8 @@
     background:#262931f2; backdrop-filter:blur(8px); border:1px solid #3a3d47; border-radius:8px;
     padding:5px; box-shadow:0 6px 20px #000a; z-index:7;
   }
+  /* 左上角 topbar 的菜单向右展开：默认 right:0 会让菜单左边缘伸出屏幕外被裁掉 */
+  #topbar .dd-menu { left:0; right:auto; min-width:180px; white-space:nowrap; }
   .dropdown.open .dd-menu { display:block; }
   .dd-menu button {
     display:block; width:100%; text-align:left; background:transparent; border:none;
@@ -260,6 +262,14 @@
           <button data-act="model">渲染图 (PNG)</button>
         </div>
       </div>
+      <div class="dropdown" id="ddExportModel">
+        <button class="dd-btn">导出模型 ▾</button>
+        <div class="dd-menu">
+          <button data-act="glb">3D 模型 (GLB，含贴图)</button>
+          <button data-act="stl">3D 模型 (STL，打印)</button>
+          <button data-act="obj">3D 模型 (OBJ)</button>
+        </div>
+      </div>
       <div class="dropdown" id="ddConfig">
         <button class="dd-btn">配置 ▾</button>
         <div class="dd-menu">
@@ -310,14 +320,24 @@ const DEFAULT_CLASSIC_CTRL = [
   { x: 82.84846493178915, y: -85.45820524939745, h1: { x: 87.09875240404779, y: -61.367411896576435 }, h2: { x: 81.13539464219684, y: -95.16795373459694 } },
   { x: 77.87016515677138, y: -116.87196203842663, h1: { x: 81.1672277264742, y: -105.1974693635984 }, h2: { x: 77.87016515677138, y: -116.87196203842663 } },
 ];
+/* ================= 单位约定 =================
+   所有长度类参数一律为**毫米**，且 1 个世界单位 = 1mm（不引入任何全局缩放）。
+   这条约定是 3D 导出、SVG/印刷落地的前提：STL/OBJ 直接按 mm 写出，
+   GLB 按 glTF 米制规范在根节点套 0.001。
+   ⚠️ 凡是新增长度参数，一律以 mm 为单位，不要引入 cm/m 或归一化比例。
+   ⚠️ 已知两处"参数值 ≠ 成品尺寸"，见 Agents.md「单位约定」一节：
+      · 倒角外扩：外廓 = 参数 + 1.8 × bevel（bevelSize = bevel × 0.9 向四周外扩）
+      · 总厚度：成品总厚 = thick + 2 × bevel（倒角在上下两侧各加一层）       */
+const MM_PER_UNIT = 1;   // 世界单位 → 毫米；保持 1 即"世界单位 = mm"
 const P = {
   // 外形
   shape: 'classic',   // rect | ellipse | stadium | classic
   cfgName: '',        // 配置名称，用于导出文件名（留空则用默认名）
+  // padW/padH 为**轮廓**尺寸（mm）；注意倒角还会让成品外廓再大 1.8×bevel
   padW: 230, padH: 265, corner: 48, thick: 1, bevel: 3,
   edgeColor: '#f4f1ec',
   edgeSame: true,   // true=边缘与上表面作为整体着色（共享本色+贴图）
-  // 腕托
+  // 腕托（以下长度量均为 mm）
   wristStyle: 'balls', // none | full | balls
   wH: 27,             // 隆起高度
   wW: 150,            // 宽度（整体式）
@@ -327,9 +347,9 @@ const P = {
   wBW: 82,            // 单球宽度
   wMorph: 0.55,       // 整体腕托: 0=椭球 1=肾型
   wMorphRot: 0,       // 整体腕托旋转角度（度），肾型形状不变，仅绕竖直轴旋转
-  wRot: 10,            // 双球旋转角（两球反向）
-  wEgg: 0.1,            // 双球鹅蛋度 -0.45..0.45
-  wJoin: 16,           // 双球过渡弧宽度（0=保留原始相交尖角）
+  wRot: 10,           // 双球旋转角（两球反向，度）
+  wEgg: 0.1,          // 双球鹅蛋度 -0.45..0.45
+  wJoin: 16,          // 双球过渡弧宽度（0=保留原始相交尖角）
   wMargin: 2,         // 经典款：外形超出腕托的距离（overhang）
   wristTopGap: 215,   // 经典款：腕托顶 → 轮廓顶的距离（决定垫身总长）
   // 经典款上半轮廓：一串三次贝塞尔锚点（含切线手柄），由腕托足迹自动烘焙后可手动拖拽。
@@ -1214,9 +1234,11 @@ function updateBackground() {
 
 /* ================= UI 构建 ================= */
 const uiSyncers = []; // 控件同步器：导入配置后遍历刷新显示值
-function slider(parent, label, min, max, step, get, set) {
+// note：可选的悬停说明（title），用于交代"参数值 ≠ 成品尺寸"这类换算关系
+function slider(parent, label, min, max, step, get, set, note) {
   const row = document.createElement('div'); row.className = 'row';
   const lb = document.createElement('label'); lb.textContent = label;
+  if (note) { lb.title = note; row.title = note; }
   const inp = document.createElement('input');
   inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
   const val = document.createElement('span'); val.className = 'val'; val.textContent = get();
@@ -1301,8 +1323,11 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
     () => P.shape, v => { P.shape = v; rebuild(); refreshShapeUI(); });
   // 宽度/圆角仅作用于非经典轮廓，经典款由腕托足迹 + 贝塞尔锚点决定，故归入 nonClassicRows 隐藏
   const nonClassicRows = [
-    slider(el, '宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); if (curveEdit) setEditOrtho(); }),
-    slider(el, '长度', 150, 340, 1, () => P.padH, v => { P.padH = v; rebuild(); }),
+    // 名称为"基础…"：这两个值是**倒角前**的轮廓尺寸，成品外廓还会再大 1.8 × 边缘倒角
+    slider(el, '基础宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); if (curveEdit) setEditOrtho(); },
+      '轮廓宽度（mm）。成品外廓 = 该值 + 1.8 × 边缘倒角'),
+    slider(el, '基础长度', 150, 340, 1, () => P.padH, v => { P.padH = v; rebuild(); },
+      '轮廓长度（mm）。成品外廓 = 该值 + 1.8 × 边缘倒角'),
     slider(el, '圆角', 0, 110, 1, () => P.corner, v => { P.corner = v; rebuild(); }),
   ];
   // 经典款：上半轮廓由贝塞尔锚点决定，仅保留驱动足迹与总长的两个参数。
@@ -1328,8 +1353,10 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
     if (!isClassic && curveEdit) setCurveEdit(false);
   };
   refreshShapeUI();
-  slider(el, '厚度', 0, 10, 0.1, () => P.thick, v => { P.thick = v; rebuild(); });
-  slider(el, '边缘倒角', 0, 8, 0.1, () => P.bevel, v => { P.bevel = v; rebuild(); });
+  slider(el, '基础厚度', 0, 10, 0.1, () => P.thick, v => { P.thick = v; rebuild(); },
+    '中间平板厚度（mm）。成品总厚 = 该值 + 2 × 边缘倒角');
+  slider(el, '边缘倒角', 0, 8, 0.1, () => P.bevel, v => { P.bevel = v; rebuild(); },
+    '边缘圆角半径（mm）。会让成品外廓每边外扩 0.9 × 该值、上下各加厚该值');
   checkRow(el, '边缘随正面整体着色', () => P.edgeSame, v => { P.edgeSame = v; if (edgeColorRow) edgeColorRow.style.display = v ? 'none' : ''; rebuild(); });
   const edgeColorRow = colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; rebuild(); });
   if (P.edgeSame && edgeColorRow) edgeColorRow.style.display = 'none';
@@ -1410,6 +1437,16 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   mbtn.style.marginTop = '6px';
   mbtn.onclick = exportModelPNG;
   el.appendChild(mbtn);
+  // 3D 模型导出
+  const mk3d = (text, kind) => {
+    const b = document.createElement('button');
+    b.className = 'btn'; b.textContent = text; b.style.marginTop = '6px';
+    b.onclick = () => exportModel3D(kind);
+    el.appendChild(b);
+  };
+  mk3d('导出模型 (GLB，含贴图)', 'glb');
+  mk3d('导出模型 (STL，打印)', 'stl');
+  mk3d('导出模型 (OBJ)', 'obj');
   // 配置导入 / 导出
   const mkBtn = (text, fn) => { const b = document.createElement('button'); b.className = 'btn'; b.textContent = text; b.style.marginTop = '6px'; b.onclick = fn; el.appendChild(b); return b; };
   mkBtn('导出配置 (JSON)', exportConfigJSON);
@@ -1452,6 +1489,7 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
       dd.classList.remove('open');
       if (act === 'preview') exportPNG();
       else if (act === 'model') exportModelPNG();
+      else if (act === 'glb' || act === 'stl' || act === 'obj') exportModel3D(act);
       else if (act === 'exportJson') exportConfigJSON();
       else if (act === 'exportZip') exportConfigZip();
       else if (act === 'import') document.getElementById('cfgFile').click();
@@ -2017,98 +2055,324 @@ function exportPNG(opts) {
   return url;
 }
 
-/* 仅导出模型：自动取景到模型整体包围盒，背景始终透明，隐藏阴影平面 */
+// 参与"模型渲染图"的对象：鼠标垫 + 可见腕托（不含地面阴影平面）
+function modelParts() {
+  const list = [];
+  if (padMesh) list.push(padMesh);
+  if (wristGroup && wristGroup.visible) list.push(wristGroup);
+  return list;
+}
+
+// 模型所有顶点在给定相机下的 NDC 包围盒（顶点级采样，比 Box3 更贴合真实剪影）。
+// 返回 null 表示无法可靠投影：没有几何，或有顶点落在相机近平面之前（透视除法会翻转）。
+function modelNDCRect(objs, cam) {
+  cam.updateMatrixWorld(true);
+  const inv = cam.matrixWorldInverse, proj = cam.projectionMatrix;
+  const persp = !!cam.isPerspectiveCamera;
+  const zLimit = -Math.max(cam.near, 1e-4);   // 相机空间：模型必须在 z < -near 一侧
+  const v = new THREE.Vector3();
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, n = 0, ok = true;
+  for (const root of objs) {
+    root.updateWorldMatrix(true, true);
+    root.traverse(o => {
+      if (!ok || !o.isMesh || !o.visible) return;
+      const pos = o.geometry && o.geometry.attributes && o.geometry.attributes.position;
+      if (!pos) return;
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld).applyMatrix4(inv);
+        if (persp && v.z > zLimit) { ok = false; return; }
+        v.applyMatrix4(proj);   // applyMatrix4 自带透视除法 → NDC
+        if (v.x < minX) minX = v.x;
+        if (v.x > maxX) maxX = v.x;
+        if (v.y < minY) minY = v.y;
+        if (v.y > maxY) maxY = v.y;
+        n++;
+      }
+    });
+  }
+  return (ok && n) ? { minX, maxX, minY, maxY } : null;
+}
+
+// 按 alpha 裁掉四周完全透明的行/列，返回 PNG dataURL。
+// 投影矩形是"外接盒"，被遮挡/凹形部分仍可能留下透明边，这一步保证 PNG 严格贴合可见像素。
+function cropTransparentPNG(src) {
+  const w = src.width, h = src.height;
+  const full = () => src.toDataURL('image/png');
+  let data;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(src, 0, 0);
+  try { data = ctx.getImageData(0, 0, w, h).data; } catch (e) { return full(); }
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      if (data[row + x * 4 + 3] === 0) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return full();   // 整张透明：原样返回，避免产出 0 尺寸图
+  if (minX === 0 && minY === 0 && maxX === w - 1 && maxY === h - 1) return full();
+  const out = document.createElement('canvas');
+  out.width = maxX - minX + 1; out.height = maxY - minY + 1;
+  out.getContext('2d').drawImage(c, -minX, -minY);
+  return out.toDataURL('image/png');
+}
+
+/* 仅导出模型：保持当前视角，画面精确对齐"模型在当前视角下的屏幕外接矩形"，
+   背景强制透明、隐藏地面阴影。
+   实现要点：相机的位置/朝向/视锥/zoom 一律不动，只用 setViewOffset 把渲染视窗
+   开在模型的投影矩形上（偏移可以超出屏幕范围，故模型比视口大时也不会被裁切），
+   渲染后再按 alpha 裁掉残余透明边。
+   ⚠️ 不要再用世界 AABB 的 size.x / size.y 反推取景：鼠标垫躺在 XZ 平面上，
+   size.y 只是厚度（几毫米量级），size.x/size.z 也不是屏幕的横竖方向，
+   据此算出的视距与宽高比与实际画面无关，会同时出现"模型被裁切"和"大片透明留白"。 */
 function exportModelPNG(opts) {
   const download = !opts || opts.download !== false;
   const scale = P.exportScale;
-  const useCam = activeCam();
-  // 整体包围盒：padMesh + wristGroup（不含阴影平面）
-  const box = new THREE.Box3();
-  if (padMesh) box.expandByObject(padMesh);
-  if (wristGroup && wristGroup.visible) box.expandByObject(wristGroup);
-  if (box.isEmpty()) { toast('模型尚未构建，无法导出', 'err'); return; }
-  const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
-  const margin = 1.06; // 轻微留白，避免边缘裁切
+  const cam = activeCam();
+  const objs = modelParts();
+  if (!objs.length) { toast('模型尚未构建，无法导出', 'err'); return; }
+
+  const fullW = Math.max(1, stage.clientWidth), fullH = Math.max(1, stage.clientHeight);
+  // 保证投影用的相机与屏幕上看到的完全一致（aspect 可能因窗口变化而未同步）
+  const prevAspect = cam.isPerspectiveCamera ? cam.aspect : null;
+  if (cam.isPerspectiveCamera && cam.aspect !== fullW / fullH) {
+    cam.aspect = fullW / fullH; cam.updateProjectionMatrix();
+  }
+
+  const r = modelNDCRect(objs, cam);
+  const PAD = 2;   // 屏幕像素安全边，防抗锯齿边缘被切掉；多余部分随后由 alpha 裁剪去掉
+  let x0, y0, x1, y1;
+  if (r) {
+    x0 = (r.minX * 0.5 + 0.5) * fullW - PAD;
+    x1 = (r.maxX * 0.5 + 0.5) * fullW + PAD;
+    y0 = (0.5 - r.maxY * 0.5) * fullH - PAD;   // NDC +Y 朝上，屏幕 +Y 朝下
+    y1 = (0.5 - r.minY * 0.5) * fullH + PAD;
+  } else {
+    x0 = 0; y0 = 0; x1 = fullW; y1 = fullH;    // 投影不可靠（模型跨越近平面）→ 退化为整屏
+  }
+  const rw = Math.max(1, x1 - x0), rh = Math.max(1, y1 - y0);
+  // 输出分辨率 = 屏幕像素密度 × 导出倍率，并限制长边不超过 MAX_EDGE（浏览器画布上限）
+  const MAX_EDGE = 8192;
+  const k = Math.min(scale, MAX_EDGE / Math.max(rw, rh));
+  const outW = Math.max(2, Math.round(rw * k)), outH = Math.max(2, Math.round(rh * k));
 
   // 保存原状态
   const prevTransparent = P.transparent;
   const prevShadow = shadowPlane.visible;
   // 与 exportPNG 同理：导出期间置 pixelRatio=1，避免倍率被 dpr 二次放大
   const prevPixelRatio = renderer.getPixelRatio();
-  renderer.setPixelRatio(1);
-  const persp = useCam.isPerspectiveCamera;
-  let saved = null;
-  if (persp) {
-    saved = { pos: useCam.position.clone(), tgt: controls.target.clone() };
-  } else {
-    saved = { left: useCam.left, right: useCam.right, top: useCam.top, bottom: useCam.bottom };
-  }
 
   // 强制透明背景（不改变 P.transparent，导出后恢复）
   P.transparent = true; updateBackground();
   shadowPlane.visible = false;
+  renderer.setPixelRatio(1);
+  renderer.setSize(outW, outH, false);
+  // 视窗宽高用 outW/k、outH/k（而非 rw/rh），与取整后的画布严格同比，避免亚像素拉伸
+  cam.setViewOffset(fullW, fullH, x0, y0, outW / k, outH / k);
+  cam.updateProjectionMatrix();
 
-  // 计算相机取景，使模型居中充满画面
-  if (persp) {
-    const fitH = size.y * margin, fitW = size.x * margin;
-    const vFov = THREE.MathUtils.degToRad(useCam.fov);
-    const distH = (fitH / 2) / Math.tan(vFov / 2);
-    const distW = (fitW / 2) / Math.tan(vFov / 2) / useCam.aspect;
-    const dist = Math.max(distH, distW) + size.z * 0.5; // 视距叠加厚度方向余量
-    const dir = useCam.position.clone().sub(controls.target).normalize();
-    useCam.position.copy(center).add(dir.multiplyScalar(dist));
-    controls.target.copy(center);
-    useCam.updateMatrixWorld(true);
-    // 导出尺寸按模型宽高比，避免多余背景区域
-    const aspect = fitW / fitH;
-    const outH = Math.max(2, Math.round(stage.clientHeight * scale));
-    const outW = Math.max(2, Math.round(outH * aspect));
-    useCam.aspect = aspect; useCam.updateProjectionMatrix();
-    renderer.setSize(outW, outH, false);
-  } else {
-    const halfX = (size.x * margin) / 2, halfY = (size.y * margin) / 2;
-    const aspect = halfX / halfY;
-    if (aspect >= 1) {
-      useCam.top = center.z + halfY; useCam.bottom = center.z - halfY;
-      useCam.left = center.x - halfX * aspect; useCam.right = center.x + halfX * aspect;
-    } else {
-      useCam.left = center.x - halfX; useCam.right = center.x + halfX;
-      useCam.top = center.z + halfY / aspect; useCam.bottom = center.z - halfY / aspect;
-    }
-    useCam.updateProjectionMatrix(); useCam.updateMatrixWorld(true);
-    const outH = Math.max(2, Math.round(stage.clientHeight * scale));
-    const outW = Math.max(2, Math.round(outH * (halfX / halfY)));
-    renderer.setSize(outW, outH, false);
-  }
-
-  renderer.render(scene, useCam);
-
-  const url = renderer.domElement.toDataURL('image/png');
+  renderer.render(scene, cam);
+  const url = cropTransparentPNG(renderer.domElement);
 
   // 恢复预览状态
-  restore();
+  cam.clearViewOffset();
+  if (prevAspect !== null) cam.aspect = prevAspect;
+  cam.updateProjectionMatrix();
+  P.transparent = prevTransparent; updateBackground();
+  shadowPlane.visible = prevShadow;
+  renderer.setSize(fullW, fullH, false);
+  renderer.setPixelRatio(prevPixelRatio);
+
   if (download) {
     const a = document.createElement('a');
     a.href = url; a.download = 'mousepad-3d-model.png'; a.click();
   }
   return url;
+}
 
-  function restore() {
-    P.transparent = prevTransparent; updateBackground();
-    shadowPlane.visible = prevShadow;
-    if (persp) {
-      useCam.position.copy(saved.pos);
-      controls.target.copy(saved.tgt);
-      useCam.aspect = stage.clientWidth / stage.clientHeight;
-      useCam.updateProjectionMatrix();
-    } else {
-      useCam.left = saved.left; useCam.right = saved.right;
-      useCam.top = saved.top; useCam.bottom = saved.bottom;
-      useCam.updateProjectionMatrix();
+/* ================= 3D 模型导出（GLB / STL / OBJ） ================= */
+// exporter 不是每次都用，按需从 CDN 动态加载（走 importmap 的 three/addons/ 前缀）并缓存。
+// specifier 必须写成字面量：动态 import 虽同样经过 import map，拼接路径不利于排查与预加载。
+const exporterCache = {};
+async function loadExporter(kind) {
+  if (exporterCache[kind]) return exporterCache[kind];
+  let C;
+  if (kind === 'glb') C = (await import('three/addons/exporters/GLTFExporter.js')).GLTFExporter;
+  else if (kind === 'stl') C = (await import('three/addons/exporters/STLExporter.js')).STLExporter;
+  else if (kind === 'obj') C = (await import('three/addons/exporters/OBJExporter.js')).OBJExporter;
+  else throw new Error('未知导出格式: ' + kind);
+  exporterCache[kind] = C;
+  return C;
+}
+
+// 从材质取出"水平裁剪面"对应的世界 y 下限（腕托用它裁掉垫身下表面以下的部分）。
+// ⚠️ clippingPlanes 只在渲染期丢弃片元，几何仍是完整椭球；导出前必须把它落实到顶点上，
+// 否则 STL/GLB 里腕托会从垫身底部整个穿出，与屏幕所见完全不同。
+function clipYOfMats(mats) {
+  for (const m of mats) {
+    const ps = m && m.clippingPlanes;
+    if (!ps || !ps.length) continue;
+    for (const p of ps) {
+      if (p && p.normal.y > 0.999 && Math.abs(p.normal.x) < 1e-6 && Math.abs(p.normal.z) < 1e-6) {
+        return -p.constant;   // 保留 y + constant >= 0 的一侧
+      }
     }
-    renderer.setSize(stage.clientWidth, stage.clientHeight, false);
-    renderer.setPixelRatio(prevPixelRatio);
+  }
+  return null;
+}
+
+// 把低于 yClip 的顶点压到该平面上（几何须已在世界坐标系）。
+// 压平而不是删面：下半部顶点投影后仍铺成一张封闭"平底"，网格保持水密，STL 可直接打印；
+// 若直接剔除越界三角形会在底部留一个大洞，slicer 会判为非法网格。
+function flattenBelowY(geo, yClip) {
+  const pos = geo.attributes.position;
+  let hit = 0;
+  for (let i = 0; i < pos.count; i++) {
+    if (pos.getY(i) >= yClip) continue;
+    pos.setY(i, yClip); hit++;
+  }
+  if (!hit) return;
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();   // 压平改变了面朝向，法线必须重算
+  // 平底中心（原球体极点附近）会出现相邻面互相抵消的零法线，computeVertexNormals 无法归一化它。
+  // glTF 规范要求法线为单位向量，零法线会让 GLTFExporter 报 non-normalized 并可能在查看器里渲染出黑斑；
+  // 这些点全部落在朝下的平底上，统一补成 (0,-1,0)。
+  const nrm = geo.attributes.normal;
+  if (nrm) {
+    for (let i = 0; i < nrm.count; i++) {
+      if (Math.hypot(nrm.getX(i), nrm.getY(i), nrm.getZ(i)) > 1e-6) continue;
+      nrm.setXYZ(i, 0, -1, 0);
+    }
+    nrm.needsUpdate = true;
+  }
+  geo.computeBoundingSphere();
+}
+
+// 把纹理变换（center/offset/repeat/rotation）烘焙进 uv。
+// 页面里贴图定位靠 texture.matrix（shader uniform），而 glTF 的 KHR_texture_transform
+// 不支持 center 分量（P.t1/P.t2 恰好用了 center=0.5），直接导出必然错位；
+// 预先把 texture.matrix 应用到 uv、导出材质再配一张"无变换"的纹理，GLB 贴图位置即与页面一致。
+function bakeUVTransform(geo, tex) {
+  const uv = geo.attributes.uv;
+  if (!uv || !tex) return;
+  tex.updateMatrix();
+  const m = tex.matrix, v = new THREE.Vector2();
+  for (let i = 0; i < uv.count; i++) { v.fromBufferAttribute(uv, i).applyMatrix3(m); uv.setXY(i, v.x, v.y); }
+  uv.needsUpdate = true;
+}
+
+// 导出用材质：标准 PBR 复刻。页面材质靠 onBeforeCompile 实现「贴图层 over 本色层」混合与
+// cutout 越界镂空，自定义 shader 无法写进 glTF，故退化为 map × color + 单一 alpha。
+function makeExportMat(src, name, uvBaked) {
+  const m = new THREE.MeshStandardMaterial({
+    name,
+    color: src.color ? src.color.clone() : new THREE.Color(0xffffff),
+    roughness: src.roughness != null ? src.roughness : 0.5,
+    metalness: src.metalness || 0,
+    opacity: P.matOpacity,
+    transparent: P.matOpacity < 0.999,
+  });
+  if (src.map) {
+    const t = src.map.clone();          // clone 共享 image，导出器自行编码
+    t.colorSpace = src.map.colorSpace;
+    if (uvBaked) { t.center.set(0, 0); t.offset.set(0, 0); t.repeat.set(1, 1); t.rotation = 0; }
+    t.needsUpdate = true;
+    m.map = t;
+  }
+  return m;
+}
+
+// 组装导出用的临时场景：只含垫身 + 可见腕托（不含灯光、相机、地面阴影平面）。
+// 几何一律烘焙世界矩阵（输出节点无变换），这样裁剪判定与法线都能直接在世界系里做，
+// 也避免 mesh.scale 非均匀 + group 旋转在三方软件里被解读成不同结果。
+// unit = 顶层缩放：STL/OBJ 惯例 1 单位 = 1mm；glTF 规范单位是米，故 GLB 用 0.001。
+function buildExportRoot(opts) {
+  const bakeUV = !!(opts && opts.bakeUV);
+  const unit = (opts && opts.unit) || 1;
+  const root = new THREE.Group();
+  root.name = 'MousePad';
+  root.scale.setScalar(unit);
+  const matMap = new Map();   // 页面材质 → 导出材质：edgeSame 时顶/边共用一份，避免重复贴图
+  const conv = (mesh, name, names) => {
+    mesh.updateWorldMatrix(true, false);
+    const geo = mesh.geometry.clone();
+    geo.applyMatrix4(mesh.matrixWorld);   // → 世界坐标（法线由 applyMatrix4 自动修正）
+    const srcMats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const yClip = clipYOfMats(srcMats);
+    if (yClip !== null) flattenBelowY(geo, yClip);
+    // 双材质共用同一套 uv，故按 [0] 的贴图矩阵烘焙：edgeSame 时顶/边同贴图，
+    // 非 edgeSame 时边缘为纯色无 map，两种情况都不会冲突
+    if (bakeUV) bakeUVTransform(geo, srcMats[0] && srcMats[0].map);
+    const outMats = srcMats.map((m, i) => {
+      if (!matMap.has(m)) matMap.set(m, makeExportMat(m, (names && names[i]) || name, bakeUV));
+      return matMap.get(m);
+    });
+    const out = new THREE.Mesh(geo, outMats.length > 1 ? outMats : outMats[0]);
+    out.name = name;
+    root.add(out);
+  };
+  if (padMesh) conv(padMesh, 'Pad', ['PadTop', 'PadEdge']);
+  if (wristGroup && wristGroup.visible) {
+    let i = 0;
+    wristGroup.traverse(o => { if (o.isMesh && o.visible) conv(o, 'WristRest_' + (++i), ['WristRest']); });
+  }
+  root.updateMatrixWorld(true);   // STL/OBJ exporter 直接读 matrixWorld，不会自己更新
+  return root;
+}
+
+// 释放临时导出场景（clone 出来的 geometry / material / texture）
+function disposeExportRoot(root) {
+  const mats = new Set();
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    o.geometry.dispose();
+    (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m && mats.add(m));
+  });
+  mats.forEach(m => { if (m.map) m.map.dispose(); m.dispose(); });
+}
+
+let exportBusy = false;
+async function exportModel3D(kind) {
+  if (exportBusy) return;                       // GLB 编码是异步的，防止连点导出多份
+  if (!modelParts().length) { toast('模型尚未构建，无法导出', 'err'); return; }
+  exportBusy = true;
+  const base = safeFileName(P.cfgName, 'mousepad-3d');
+  let root = null;
+  // 导出单位统一由 MM_PER_UNIT 推导，不写死数字，避免单位约定改动时漏改
+  const UNIT_MM = MM_PER_UNIT;             // STL/OBJ：加工惯例 1 单位 = 1mm
+  const UNIT_M  = MM_PER_UNIT / 1000;      // glTF 规范单位是米
+  try {
+    const C = await loadExporter(kind);
+    if (kind === 'glb') {
+      toast('正在生成 GLB…', '', 1500);
+      root = buildExportRoot({ bakeUV: true, unit: UNIT_M });
+      const buf = await new Promise((res, rej) =>
+        new C().parse(root, res, rej, { binary: true, onlyVisible: true, maxTextureSize: 4096 }));
+      downloadBlob(new Blob([buf], { type: 'model/gltf-binary' }), base + '.glb');
+      toast('已导出 GLB（含材质与贴图，1 单位 = 1m）', 'ok');
+    } else if (kind === 'stl') {
+      root = buildExportRoot({ unit: UNIT_MM });
+      const dv = new C().parse(root, { binary: true });
+      downloadBlob(new Blob([dv], { type: 'model/stl' }), base + '.stl');
+      toast('已导出 STL（仅几何，1 单位 = 1mm）', 'ok');
+    } else {
+      root = buildExportRoot({ unit: UNIT_MM });
+      const txt = new C().parse(root);
+      downloadBlob(new Blob([txt], { type: 'text/plain' }), base + '.obj');
+      toast('已导出 OBJ（仅几何、无材质，1 单位 = 1mm）', 'ok');
+    }
+  } catch (e) {
+    console.error('[导出模型]', e);
+    toast('模型导出失败：' + ((e && e.message) || e), 'err');
+  } finally {
+    if (root) disposeExportRoot(root);
+    exportBusy = false;
   }
 }
 
