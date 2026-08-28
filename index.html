@@ -1706,107 +1706,14 @@ function screenToShape(e) {
   return { x, y };
 }
 
+// 编辑模式叠加层：只画锚点 / 切线手柄，不画轮廓线。
+// 轮廓形状直接由 3D 渲染结果呈现（改用渲染效果判断外观），叠加层只负责交互。
+// 历史备注：此前曾从 padMesh 顶面提取闭合边界边绘制蓝色轮廓线，因与渲染外形重复而移除。
 function drawCurveOverlay() {
   if (!curveEdit) return;
   const c = P.classicCtrl;
   cctx.clearRect(0, 0, stage.clientWidth, stage.clientHeight);
   if (!Array.isArray(c) || !c.length) return;
-
-  // 主轮廓（蓝）：从 padMesh.geometry 顶面（y ≈ P.thick/2）提取边界边，
-  // 按三角形邻接走成闭合路径，逐点 project(orthoCam) 投屏。
-  // 这与 renderer.render 走完全相同的顶点+投影路径，从根本上消除任何差异；
-  // 也避免 makeClassicShape().getPoints(400) 采样折线感与 3D 圆滑外形视觉不一致。
-  try {
-    const geo = padMesh && padMesh.geometry;
-    const pos = geo && geo.attributes && geo.attributes.position;
-    const idx = geo && geo.index;
-    if (pos && pos.count > 4) {
-      const topY = P.thick / 2;
-      const tol = 0.05;
-      const w = stage.clientWidth, h = stage.clientHeight;
-      const v = new THREE.Vector3();
-      // 1) 找顶面三角形（3 个顶点都 y ≈ topY）
-      const triIndices = [];
-      const useIdx = idx ? idx.array : null;
-      const N = useIdx ? useIdx.length : pos.count;
-      const get = (i) => useIdx ? useIdx[i] : i;
-      for (let i = 0; i < N; i += 3) {
-        const a = get(i), b = get(i + 1), c = get(i + 2);
-        const ya = pos.getY(a), yb = pos.getY(b), yc = pos.getY(c);
-        if (Math.abs(ya - topY) <= tol && Math.abs(yb - topY) <= tol && Math.abs(yc - topY) <= tol) {
-          triIndices.push([a, b, c]);
-        }
-      }
-      if (triIndices.length > 0) {
-        // 2) 合并重复顶点（容差内）
-        const mergeTol = 0.5;
-        const merged = []; // [{x,z}]
-        const remap = new Int32Array(pos.count);
-        for (let i = 0; i < pos.count; i++) {
-          const x = pos.getX(i), z = pos.getZ(i);
-          let found = -1;
-          for (let j = 0; j < merged.length; j++) {
-            if (Math.abs(merged[j].x - x) < mergeTol && Math.abs(merged[j].z - z) < mergeTol) {
-              found = j; break;
-            }
-          }
-          if (found < 0) { merged.push({ x, z }); found = merged.length - 1; }
-          remap[i] = found;
-        }
-        // 3) 三角形 → 边使用计数
-        const edges = new Map(); // key: "min*1e7+max" → count
-        const edgeList = []; // [{a, b, count}]
-        for (const [a, b, c] of triIndices) {
-          const A = remap[a], B = remap[b], C = remap[c];
-          for (const [u, v] of [[A, B], [B, C], [C, A]]) {
-            if (u === v) continue;
-            const lo = Math.min(u, v), hi = Math.max(u, v);
-            const key = lo * 100000 + hi;
-            const e = edges.get(key);
-            if (e) e.count++;
-            else edges.set(key, { a: u, b: v, count: 1 });
-          }
-        }
-        // 4) 边界边（count === 1）= 顶面外轮廓
-        const boundaryEdges = [];
-        for (const e of edges.values()) if (e.count === 1) boundaryEdges.push([e.a, e.b]);
-        if (boundaryEdges.length >= 3) {
-          // 5) 建邻接表（无向）
-          const adj = merged.map(() => []);
-          boundaryEdges.forEach(([a, b], ei) => { adj[a].push({ n: b, e: ei }); adj[b].push({ n: a, e: ei }); });
-          // 6) 从最左侧顶点出发，沿边界边遍历（已访问的边不再走），直到回到起点
-          let start = 0;
-          for (let i = 1; i < merged.length; i++) if (merged[i].x < merged[start].x) start = i;
-          const usedEdge = new Set();
-          const path = [start];
-          let cur = start;
-          for (let step = 0; step < boundaryEdges.length; step++) {
-            let next = null;
-            for (const { n, e } of adj[cur]) {
-              if (usedEdge.has(e)) continue;
-              next = { n, e }; break;
-            }
-            if (!next) break;
-            usedEdge.add(next.e);
-            if (next.n === start) { path.push(start); break; }
-            path.push(next.n);
-            cur = next.n;
-          }
-          if (path.length >= 3) {
-            cctx.beginPath();
-            path.forEach((idx2, i) => {
-              const vv = new THREE.Vector3(merged[idx2].x, topY, merged[idx2].z).project(orthoCam);
-              const sx = (vv.x * 0.5 + 0.5) * w;
-              const sy = (-vv.y * 0.5 + 0.5) * h;
-              if (i === 0) cctx.moveTo(sx, sy); else cctx.lineTo(sx, sy);
-            });
-            cctx.closePath();
-            cctx.strokeStyle = '#4da3ff'; cctx.lineWidth = 2; cctx.stroke();
-          }
-        }
-      }
-    }
-  } catch (e) {}
 
   // 手柄连线与控制点
   c.forEach((p, i) => {
@@ -1828,104 +1735,6 @@ function drawCurveOverlay() {
     cctx.strokeStyle = p.pin ? '#7d8694' : '#4da3ff';
     cctx.lineWidth = 2; cctx.stroke();
   });
-
-  // ?diag：画两个对比框（蓝框=shapeToScreen 蓝线 bbox，红框=padMesh 顶面顶点投屏 bbox）
-  // 两框严格重合即说明数据/投影一致；偏移量即不重合根因。
-  if (location.search.includes('diag')) {
-    const w = stage.clientWidth, h = stage.clientHeight;
-    // 蓝框
-    const sh = makeClassicShape().getPoints(400);
-    let bx0=Infinity,bx1=-Infinity,by0=Infinity,by1=-Infinity;
-    for (const p of sh){const s=shapeToScreen(p.x,p.y);if(s.x<bx0)bx0=s.x;if(s.x>bx1)bx1=s.x;if(s.y<by0)by0=s.y;if(s.y>by1)by1=s.y;}
-    cctx.strokeStyle = '#4da3ff'; cctx.lineWidth = 1;
-    cctx.strokeRect(bx0, by0, bx1-bx0, by1-by0);
-    // 红框
-    const pos = padMesh.geometry.attributes.position;
-    const topY = P.thick/2;
-    const v = new THREE.Vector3();
-    let px0=Infinity,px1=-Infinity,py0=Infinity,py1=-Infinity;
-    for (let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i);if(Math.abs(v.y-topY)>0.05)continue;
-      const pr=v.clone().project(orthoCam);const sx=(pr.x*0.5+0.5)*w,sy=(-pr.y*0.5+0.5)*h;
-      if(sx<px0)px0=sx;if(sx>px1)px1=sx;if(sy<py0)py0=sy;if(sy>py1)py1=sy;}
-    cctx.strokeStyle = '#ff3b6b'; cctx.lineWidth = 1;
-    cctx.strokeRect(px0, py0, px1-px0, py1-py0);
-    // 左上角文字
-    cctx.fillStyle = 'rgba(0,0,0,0.6)'; cctx.fillRect(4, 4, 320, 60);
-    cctx.fillStyle = '#4da3ff'; cctx.font = '12px monospace';
-    cctx.fillText('blue(curve): '+bx0.toFixed(0)+','+by0.toFixed(0)+'→'+bx1.toFixed(0)+','+by1.toFixed(0), 8, 20);
-    cctx.fillStyle = '#ff3b6b';
-    cctx.fillText('red(mesh): '+px0.toFixed(0)+','+py0.toFixed(0)+'→'+px1.toFixed(0)+','+py1.toFixed(0), 8, 36);
-    cctx.fillStyle = '#fff';
-    cctx.fillText('dpr:'+renderer.getPixelRatio()+' stage:'+w+'x'+h+' canvas:'+renderer.domElement.width+'x'+renderer.domElement.height, 8, 52);
-    // 顶面顶点世界坐标范围
-    let minWx=Infinity,maxWx=-Infinity;
-    for (let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i);if(Math.abs(v.y-topY)>0.05)continue;
-      if(v.x<minWx)minWx=v.x;if(v.x>maxWx)maxWx=v.x;}
-    cctx.fillStyle='#fff';cctx.fillText('topface wx: '+minWx.toFixed(1)+'→'+maxWx.toFixed(1),8,68);
-    // padMesh 顶面 NDC 范围
-    let ndcMinX=Infinity,ndcMaxX=-Infinity,ndcMinY=Infinity,ndcMaxY=-Infinity;
-    for (let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i);if(Math.abs(v.y-topY)>0.05)continue;
-      const pr=v.clone().project(orthoCam);
-      if(pr.x<ndcMinX)ndcMinX=pr.x;if(pr.x>ndcMaxX)ndcMaxX=pr.x;
-      if(pr.y<ndcMinY)ndcMinY=pr.y;if(pr.y>ndcMaxY)ndcMaxY=pr.y;}
-    cctx.fillStyle='#fff';cctx.fillText('ndc x:'+ndcMinX.toFixed(3)+'→'+ndcMaxX.toFixed(3)+' y:'+ndcMinY.toFixed(3)+'→'+ndcMaxY.toFixed(3),8,162);
-    // 调试：把内部统计打到画面（?diag 时可见）
-    if (location.search.includes('diag')) {
-      try {
-        const geo = padMesh && padMesh.geometry;
-        const pos = geo && geo.attributes && geo.attributes.position;
-        const idx = geo && geo.index;
-        const topY = P.thick/2; const tol = 0.05;
-        const useIdx = idx ? idx.array : null;
-        const N = useIdx ? useIdx.length : pos.count;
-        const get = (i) => useIdx ? useIdx[i] : i;
-        let tri=0, vx=0;
-        const seen=new Set();
-        for(let i=0;i<N;i+=3){const a=get(i),b=get(i+1),c=get(i+2);
-          const ya=pos.getY(a),yb=pos.getY(b),yc=pos.getY(c);
-          if(Math.abs(ya-topY)<=tol&&Math.abs(yb-topY)<=tol&&Math.abs(yc-topY)<=tol){
-            tri++;
-            [a,b,c].forEach(k=>seen.add(k));
-          }}
-        vx=seen.size;
-        cctx.fillStyle='#fff';cctx.font='12px monospace';
-        cctx.fillText('topY='+topY+'  N='+N+'  hasIdx='+(!!idx)+'  topTris='+tri+'  topVerts='+vx,8,114);
-      // 扫描 view canvas 中浅绿像素的屏幕 bbox（matColor #b6e3a8）
-      try {
-        const cvs = renderer.domElement;
-        const tmp = document.createElement('canvas');
-        tmp.width = cvs.width; tmp.height = cvs.height;
-        const tc = tmp.getContext('2d');
-        tc.drawImage(cvs, 0, 0);
-        const data = tc.getImageData(0, 0, cvs.width, cvs.height).data;
-        const tr=182,tg=227,tb=168;
-        let gx0=Infinity,gx1=-Infinity,gy0=Infinity,gy1=-Infinity;
-        const step = 2;
-        for (let y=0;y<cvs.height;y+=step){
-          for (let x=0;x<cvs.width;x+=step){
-            const i=(y*cvs.width+x)*4;
-            const dr=data[i]-tr,dg=data[i+1]-tg,db=data[i+2]-tb;
-            if (dr*dr+dg*dg+db*db<2500){
-              if(x<gx0)gx0=x;if(x>gx1)gx1=x;if(y<gy0)gy0=y;if(y>gy1)gy1=y;
-            }
-          }
-        }
-        const sxS = cvs.clientWidth/cvs.width, syS = cvs.clientHeight/cvs.height;
-        const gx0c=gx0*sxS, gx1c=gx1*sxS, gy0c=gy0*syS, gy1c=gy1*syS;
-        cctx.fillStyle='#fff';cctx.fillText('green-px css: '+gx0c.toFixed(0)+','+gy0c.toFixed(0)+'→'+gx1c.toFixed(0)+','+gy1c.toFixed(0)+' wh='+(gx1c-gx0c).toFixed(0)+'x'+(gy1c-gy0c).toFixed(0),8,130);
-        // 用黄色矩形标出绿色像素真实 bbox，便于肉眼对比
-        cctx.strokeStyle='#ffea00';cctx.lineWidth=2;
-        cctx.strokeRect(gx0c, gy0c, gx1c-gx0c, gy1c-gy0c);
-      } catch(e){}
-      } catch(e){}
-    }
-    // 不重合量（屏幕像素）—— 一行醒目大字
-    const dx = Math.round(bx0-px0), dy = Math.round(by0-py0);
-    const dw = Math.round((bx1-bx0)-(px1-px0)), dh = Math.round((by1-by0)-(py1-py0));
-    cctx.fillStyle='rgba(255,0,80,0.9)'; cctx.fillRect(4, 124, 470, 30);
-    cctx.fillStyle='#fff'; cctx.font='bold 16px monospace';
-    cctx.fillText('Δ xy=' + dx + ',' + dy + '  Δ wh=' + dw + ',' + dh + 'px', 8, 144);
-  }
 }
 
 // 命中检测：优先手柄，其次锚点（屏幕空间距离，保证不同缩放下手感一致）

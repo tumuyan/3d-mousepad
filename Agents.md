@@ -7,7 +7,7 @@
 | 用户视角术语 | 代码对应 | 说明 |
 | --- | --- | --- |
 | **鼠标垫外形 / 鼠标垫（模型）** | `padMesh`（`THREE.Mesh` + `ExtrudeGeometry(makeClassicShape())`） | 3D 场景中的鼠标垫顶面 / 侧面 / 底面，是用户看到的"鼠标垫"本体 |
-| **控制曲线** | `drawCurveOverlay()` 中画出的**蓝色贝塞尔线** + **黑色锚点** + **橙色手柄方块** | 编辑模式下覆盖在 3D 场景上的可拖拽曲线 |
+| **控制点叠加层** | `drawCurveOverlay()` 中画出的**黑色锚点圆**（描边 `#4da3ff`）+ **橙色手柄方块**（`#ff7a59`，hover 变 `#ffd166`）+ 手柄连线（`#6b7480`） | 编辑模式下覆盖在 3D 场景上的可拖拽控制点。⚠️**不画轮廓线**：轮廓外形直接看 3D 渲染结果（2026-08-28 用户决定：只需操作锚点，用渲染效果判断外观） |
 | **经典形状 / 经典款** | `P.shape === 'classic'`（下拉框中文标签 "经典"） | 鼠标垫外形采用经典贝塞尔变形的形状（用户明确：此模式叫"经典"，不叫 hug） |
 | **圆角矩形** | `P.shape === 'rect'` | 默认 pad 形状 |
 | **椭圆 / 胶囊形** | `P.shape === 'ellipse' / 'stadium'` | 其他可选形状 |
@@ -29,7 +29,7 @@
 - `buildFootprint(out, noRot)` — 生成一段完整足迹（含 `wMargin` 外扩）写入 `out`。`makeClassicShape()` 调两次：`noRot=false` 出真实轮廓，`noRot=true` 出**旋转无关的布局基准**（垫身总长 `padH` + 腕托 z 基准 `classicZBaseCache`）
 - `setEditOrtho()` — 计算正交视锥：`L/R/T/B` 基于 `makeClassicShape()` 真实 bbox，中心对齐 shape 几何中心
 - `shapeToScreen(shapeX, shapeY)` — 把 shape 2D 坐标投影到屏幕像素，矩阵来源与 3D 渲染相同
-- `drawCurveOverlay()` — 编辑模式下在 `curveLayer` 画蓝色控制曲线（投影 `makeClassicShape` 完整轮廓）+ 锚点/手柄
+- `drawCurveOverlay()` — 编辑模式下在 `curveLayer` 画**锚点 + 切线手柄**（仅交互元素）。⚠️**已移除蓝色轮廓线**（曾从 `padMesh` 顶面提取闭合边界边绘制，与 3D 渲染外形重复，2026-08-28 移除；相关 `?diag` 对比调试块一并删除）。轮廓外观改由 `padMesh` 渲染结果直接呈现
 - `buildPad()` — `P.shape === 'classic'` 时调用 `makeClassicShape()` 构建 `padMesh`（编辑态也保留倒角 `bevelEnabled: P.bevel>0`，顶面在世界 Y = `P.thick/2 + P.bevel`）
 - `buildWrist(topY)` — 构建腕托 cushion，**始终 `wristGroup.visible = true`**（编辑模式也显示，以呈现真实渲染）
 - `setCurveEdit(on)` — 进入/退出编辑模式，切换 `curveEdit`、正交相机渲染、`controls.enabled`、覆盖层显示（不再控制腕托显隐）
@@ -45,9 +45,10 @@
 - `colorRow()` **必须 `return row`**：`边缘同色` 勾选时隐藏的 `边缘颜色` 行依赖 `colorRow` 返回值；若漏写 `return row` 则 `edgeColorRow` 恒为 `undefined`、显隐完全失效（含导入后恢复）
 
 ## 3. 视觉一致性原则
-- 蓝色控制曲线 = `makeClassicShape()` 完整投影 = `padMesh` 顶面 = 鼠标垫 3D 渲染外形，三者**严格 1:1 重合**（数学保证：同一相机同一矩阵同一 shape；顶面边界即 shape 边界，开启倒角后轮廓仍对齐，`shapeTopY()` 已含 `+P.bevel`）
-- 鼠标垫颜色（材质色、贴图）由 `P.t1 / P.t2 / P.baseColor / P.padColor` 等参数控制；为方便调试，用户已指示将鼠标垫**整体着色为黄色**，与蓝色控制曲线形成高对比
-- 编辑模式下也显示腕托 cushion、保留立体倒角，以呈现实际渲染状况（鼠标垫立体外观、腕托凸起、光照/贴图）；蓝色轮廓覆盖层始终绘制在 3D 之上，拖拽编辑不受影响
+- **轮廓外形的唯一真相是 `padMesh` 的 3D 渲染结果**：`makeClassicShape()` → `ExtrudeGeometry` → `padMesh`，叠加层不再画轮廓线（2026-08-28 移除蓝线）。因此**不再存在「叠加层轮廓 vs 渲染轮廓」对不齐这类问题**
+- **锚点定位仍以顶面为准**：`shapeToScreen()` / `screenToShape()` 用 `shapeTopY() = P.thick/2 + P.bevel`（顶面高度），保证锚点圆与渲染出的顶面在同一平面上，拖拽手感与视觉一致
+- 鼠标垫颜色（材质色、贴图）由 `P.t1 / P.t2 / P.baseColor / P.padColor` 等参数控制
+- 编辑模式下也显示腕托 cushion、保留立体倒角，以呈现实际渲染状况（鼠标垫立体外观、腕托凸起、光照/贴图）；锚点/手柄覆盖层始终绘制在 3D 之上，拖拽编辑不受影响
 - 腕托与倒角在所有模式下均显示，不存在"退出编辑才出现"的状态
 
 ## 4. 修改/调试注意事项
