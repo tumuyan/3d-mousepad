@@ -236,6 +236,11 @@
       <div class="sec-body" id="exportCtrls"></div>
     </details>
 
+    <details>
+      <summary>调试</summary>
+      <div class="sec-body" id="debugCtrls"></div>
+    </details>
+
     <footer id="about">
       <div class="about-title">3D MousePad Studio</div>
       <div class="about-line">作者：<a href="https://github.com/tumuyan" target="_blank" rel="noopener">tumuyan</a></div>
@@ -1088,11 +1093,96 @@ function buildWrist(topY) {
   scene.add(wristGroup);
 }
 
-function rebuild() {
+/* ---------- 调试：rebuild 耗时统计（默认关闭） ---------- */
+// console.* 自身开销不可忽略（字符串格式化 + 参数结构化克隆跨进程序列化 +
+// DevTools 打开时还要经 CDP 传输），实测开 DevTools 下单次可达 0.1~1ms，
+// 而 rebuild 仅 7~11ms、拖拽时 60 次/秒 —— 常开会把被测对象拖慢到失真。
+// 故默认关闭，由「调试」面板勾选框开启。
+// 关键：关闭时 tNow() 直接返回 0，连 performance.now() 都不调用，做到零开销。
+// 另：计时区间只包住实际工作，console.log 发生在 t3 之后，
+// 因此日志开销不会污染上报的 rebuild 耗时（只会拉低整帧帧率）。
+let dbgRebuild = false;
+const tNow = () => (dbgRebuild ? performance.now() : 0);
+// ortho / wrist 是条件执行的分段，各自单独计数（wristN / orthoN）后再求均值；
+// 若按总次数平均，会被 padOnly 或非编辑态的 0 值稀释成无意义的数字。
+const dbg = { n: 0, total: 0, max: 0, pad: 0, wrist: 0, wristN: 0, ortho: 0, orthoN: 0, padOnly: 0, winStart: -1, winN: 0 };
+const DBG_WIN = 500;   // 汇总窗口(ms)：逐条看单次耗时，汇总看"调用过密"的频率
+
+function dbgReset() {
+  dbg.n = dbg.total = dbg.max = 0;
+  dbg.pad = dbg.wrist = dbg.wristN = dbg.ortho = dbg.orthoN = dbg.padOnly = 0;
+  dbg.winStart = -1; dbg.winN = 0;
+}
+
+function dbgReport(t0, t1, t2, t3) {
+  const pad = t1 - t0, wrist = t2 - t1, ortho = t3 - t2, total = t3 - t0;
+  dbg.n++; dbg.total += total; dbg.pad += pad;
+  // padOnly 时 wrist 段为 0（未执行）；ortho 非编辑态为 0。两者都按实际执行次数平均
+  if (wrist > 0) { dbg.wrist += wrist; dbg.wristN++; }
+  if (ortho > 0) { dbg.ortho += ortho; dbg.orthoN++; }
+  if (total > dbg.max) dbg.max = total;
+  dbg.winN++;
+  if (dbg.winStart < 0) dbg.winStart = t0;
+  console.log(`[rebuild] ${total.toFixed(2)}ms  =  pad ${pad.toFixed(2)} + wrist ${wrist.toFixed(2)} + ortho ${ortho.toFixed(2)}`);
+  const span = t3 - dbg.winStart;
+  if (span >= DBG_WIN) {
+    const hz = dbg.winN / span * 1000;
+    console.log(`[rebuild 汇总] 最近 ${span.toFixed(0)}ms：${dbg.winN} 次 (${hz.toFixed(1)} 次/秒)`
+      + `  |  累计 ${dbg.n} 次  均值 ${(dbg.total / dbg.n).toFixed(2)}ms  峰值 ${dbg.max.toFixed(2)}ms`
+      + `  |  分段均值 pad ${(dbg.pad / dbg.n).toFixed(2)}`
+      + ` / wrist ${(dbg.wristN ? dbg.wrist / dbg.wristN : 0).toFixed(2)} (${dbg.wristN} 次)`
+      + ` / ortho ${(dbg.orthoN ? dbg.ortho / dbg.orthoN : 0).toFixed(2)} (${dbg.orthoN} 次)`
+      + `  |  仅垫身 ${dbg.padOnly} 次`);
+    dbg.winStart = t3; dbg.winN = 0;
+  }
+}
+
+// 勾选框 / 控制台均可开关：window.setDbgRebuild(true)
+window.setDbgRebuild = v => {
+  dbgRebuild = !!v;
+  dbgReset();
+  if (dbgRebuild) console.log(`[rebuild] 计时已开启：逐次打印分段耗时，每 ${DBG_WIN}ms 汇总一次调用频率。`
+    + '注意日志本身有开销，测帧率时请关掉。');
+};
+
+// padOnly=true 时只重建垫身、跳过腕托。
+// 适用前提：本次改动只影响 P.classicCtrl（拖锚点 / 手柄、双击加点、右键删点、重置锚点）。
+// 安全性依据：buildWrist() 的全部输入为
+//   P.wristStyle / wH / wW / wD / wBW / wGap / wRot / wEgg / wMorph / wMorphRot / wPos
+//   + wristZBase() → classicZBaseCache
+//   + uvScale()    → padHeight() → classicPadHCache
+// 而后两个缓存由 makeClassicShape() 只从「未旋转的腕托足迹 refPts」推导（见 795-808 行），
+// 足迹不读 P.classicCtrl —— 可拖拽锚点只决定上半轮廓。故跳过腕托不会留下陈旧状态。
+// ⚠️ 新增 padOnly 调用点前必须重新核对上述依赖，否则腕托会静默停在错误位置。
+function rebuild(padOnly) {
+  const t0 = tNow();
   const topY = buildPad();
-  buildWrist(topY);
+  const t1 = tNow();
+  if (padOnly) dbg.padOnly++; else buildWrist(topY);
+  const t2 = tNow();
   markOverlayDirty();              // 几何变了：锚点世界坐标、顶面高度都可能跟着变
   if (curveEdit) setEditOrtho();   // 几何/尺寸变了，正交视口要跟着缩放
+  const t3 = tNow();
+  if (dbgRebuild) dbgReport(t0, t1, t2, t3);
+}
+
+/* ---------- 高频输入合并：同一帧内只重建一次 ---------- */
+// 浏览器通常已把 pointermove 合并到每帧一次，此守卫是兜底：
+// 未合并的浏览器、高刷屏、或事件突发时，同一帧内多次事件只做一次重建。
+//
+// 为什么不用 requestAnimationFrame 延迟执行：
+// rAF 回调排在已注册的主循环之后，重建会晚于本帧 renderer.render()，
+// 几何必然滞后一帧。改为「帧号守卫 + 同步执行」：
+// pointermove 在 rAF 之前派发，重建发生在同一帧渲染前，零滞后。
+//
+// 此处不显式调 drawCurveOverlay()：pointermove 已同步改好 P.classicCtrl，
+// 主循环的 overlayKey() 兜底会在同一帧发现几何变化并重绘锚点，每帧恰好一次。
+let curFrame = 0;          // 主循环每帧自增
+let padBuiltFrame = -1;
+function rebuildPadCoalesced() {
+  if (padBuiltFrame === curFrame) return;   // 本帧已重建，跳过（锚点仍由主循环兜底重绘）
+  padBuiltFrame = curFrame;
+  rebuild(true);
 }
 
 /* ================= 光照 ================= */
@@ -1228,7 +1318,7 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
     const resetBtn = document.createElement('button');
     resetBtn.textContent = '重置锚点';
     resetBtn.style.cssText = 'margin-left:8px;padding:3px 10px;border:0;border-radius:5px;background:#3a4150;color:#e6e9ef;cursor:pointer;font-size:12px';
-    resetBtn.onclick = () => { P.classicCtrl = structuredClone(DEFAULT_CLASSIC_CTRL); refreshShapeUI(); rebuild(); if (curveEdit) drawCurveOverlay(); };
+    resetBtn.onclick = () => { P.classicCtrl = structuredClone(DEFAULT_CLASSIC_CTRL); refreshShapeUI(); rebuild(true); if (curveEdit) drawCurveOverlay(); };
     editRow.appendChild(resetBtn);
   }
   window.refreshShapeUI = () => {
@@ -1333,6 +1423,16 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   const impBtn = mkBtn('导入配置 (JSON / ZIP)', () => imp.click());
   impBtn.style.background = '#2f6f4f';
   el.appendChild(imp);
+}
+
+/* --- 调试 --- */
+{
+  const el = document.getElementById('debugCtrls');
+  checkRow(el, 'rebuild 耗时打到控制台', () => dbgRebuild, v => window.setDbgRebuild(v));
+  btnRow(el, '统计清零', '清空', () => {
+    dbgReset();
+    console.log('[rebuild] 统计已清零');
+  });
 }
 
 /* --- 右上角主工具栏：导出图片 / 复制 / 配置 --- */
@@ -1841,8 +1941,9 @@ curveLayer.addEventListener('pointermove', e => {
       p[oth].y = p.y - (m.y - p.y) / d * len;
     }
   }
-  rebuild();
-  drawCurveOverlay();
+  // 只改了 classicCtrl → 无需重建腕托；同一帧内多次事件合并为一次重建。
+  // 叠加层不在此处重绘：主循环 overlayKey() 兜底会在本帧内画出新锚点位置。
+  rebuildPadCoalesced();
 });
 
 const endCurveDrag = () => { cvDrag = null; };
@@ -1864,7 +1965,7 @@ curveLayer.addEventListener('dblclick', e => {
   // 仅对新点及其邻居重算切线，保持其他锚点的手动调整
   const seg = c.slice(Math.max(0, bi), Math.min(c.length, bi + 3));
   autoSmoothClassicCtrl(seg);
-  rebuild(); drawCurveOverlay();
+  rebuild(true); drawCurveOverlay();   // 只改 classicCtrl，跳过腕托
 });
 
 // 右键删点（pin 与保证至少 3 点的约束下）
@@ -1876,7 +1977,7 @@ curveLayer.addEventListener('contextmenu', e => {
   if (!h || h.kind !== 'anchor' || c[h.i].pin) return;
   c.splice(h.i, 1);
   cvHover = null;
-  rebuild(); drawCurveOverlay();
+  rebuild(true); drawCurveOverlay();   // 只改 classicCtrl，跳过腕托
 });
 
 /* ================= 导出 ================= */
@@ -2211,6 +2312,7 @@ resize();
 
 (function loop() {
   requestAnimationFrame(loop);
+  curFrame++;                      // 供 rebuildPadCoalesced() 判断"本帧是否已重建"
   controls.update();
   // 编辑态：用正交相机渲染（与覆盖层投影严格同源）
   const renderCam = curveEdit && orthoCam ? orthoCam : camera;
