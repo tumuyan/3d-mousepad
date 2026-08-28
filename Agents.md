@@ -25,6 +25,8 @@
 
 ## 2. 关键代码定位
 - `makeClassicShape()` — 生成经典形状的完整 `THREE.Shape`，上半贝塞尔 + 下半足迹折线
+- `wristFootprint(kind, opts)` — 采样腕托「原始足迹」折线（右→左）。⚠️ 变换链必须与 3D 腕托**逐字一致**：单位球 → 变形 → 按半轴缩放 → 绕 y 轴旋转（`noRot=true` 可忽略旋转角）。`kind==='full'` 时弧段起点用 `t0 = atan2(ry*s, rx*c)`，保证两端接缝落在旋转后轮廓的最宽点
+- `buildFootprint(out, noRot)` — 生成一段完整足迹（含 `wMargin` 外扩）写入 `out`。`makeClassicShape()` 调两次：`noRot=false` 出真实轮廓，`noRot=true` 出**旋转无关的布局基准**（垫身总长 `padH` + 腕托 z 基准 `classicZBaseCache`）
 - `setEditOrtho()` — 计算正交视锥：`L/R/T/B` 基于 `makeClassicShape()` 真实 bbox，中心对齐 shape 几何中心
 - `shapeToScreen(shapeX, shapeY)` — 把 shape 2D 坐标投影到屏幕像素，矩阵来源与 3D 渲染相同
 - `drawCurveOverlay()` — 编辑模式下在 `curveLayer` 画蓝色控制曲线（投影 `makeClassicShape` 完整轮廓）+ 锚点/手柄
@@ -64,6 +66,8 @@
 
 - **`ensureClassicCtrl` 的 stale 判断**：只要求每个点 `x/y` 有限；若某点"部分有手柄"（`p.h1||p.h2` 但缺其一）才判无效。中间接缝锚点可**完全无 `h1/h2`**（合法），返回前会由 `ensureClassicCtrl` 自动补一对平滑共线手柄，避免 `makeClassicShape()` 的贝塞尔链读到 `undefined` 手柄。**曾误判"无 h 的点"为 stale 而退回程序化默认形状**，导致默认外形不符设计稿
 - **经典轮廓导入兼容**：`importConfigFile` 已兼容旧版 `{p:{x,y}, h1, h2}` 嵌套格式（自动提升为顶层 `{x,y,h1,h2}`）。但优先保持运行时顶层格式；导入任何顶层格式的设计稿后，其外形应与默认外形（同一 `DEFAULT_CLASSIC_CTRL`）一致
+- **⚠️ 足迹变换顺序：先缩放后旋转，不可颠倒**：3D 腕托的局部矩阵是 `T·R·S`（`mesh.scale` 先作用、`rotation.y` 后作用），`wristFootprint()` 必须同样「缩放 → 旋转」。**曾写成在单位空间里先旋转后缩放**，对非圆截面（rx≠rz）会产出与真实 cushion 完全不同的轮廓（整体款 45° 时偏差达 34 单位），且旧代码整体款还把旋转方向写反（`wristGroup.rotation.y` 是 +θ，足迹算的是 −θ）
+- **⚠️ 垫身总长/腕托位置必须取「未旋转」基准**：`padH` 与 `classicZBaseCache` 只能由 `buildFootprint(_, true)`（忽略旋转角）的足迹跨度推算。**曾直接用旋转后足迹的纵向跨度**，而该跨度随旋转角变化（侧缘点绕腕托中心摆动，整体款 0°→90° 跨度 36→99）→ 旋转时垫身被拉长/缩短、腕托整体前后平移（整体款 0°→90° 腕托中心位移 81）。改完这两项后：旋转仅改变包裹轮廓外形，腕托中心与总长恒定，整体款因「旋转后 cushion 确实更深」而保留的底部加深属物理必然
 
 ## 5. 仓库结构
 ```

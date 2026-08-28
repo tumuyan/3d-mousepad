@@ -567,19 +567,26 @@ function makeClassicShape() {
   let rawEdgeL = null; // 未加 overhang 的腕托原始侧缘 x（用于腰线基准）
   let rawEdgeR = null;
 
-  // 采样某一腕托轮廓在前半圆(z>=0)上的“原始足迹”（未经 overhang 偏移），
-  // 与 3D 碗托几何体保持同一套单位球变形/旋转/缩放，返回 [{x, z}]
-  // opts 在 kind==='ball' 时传 {rot: 弧度, ox: 球心 x 偏移}
+  // 采样某一腕托轮廓的“原始足迹”（未经 overhang 偏移），按 右→左 顺序返回 [{x, z}]。
+  // 变换链必须与 3D 腕托严格一致：单位球 → 变形 → 按半轴缩放 → 绕 y 轴旋转。
+  // Three.js 局部矩阵为 T·R·S（先缩放后旋转）；旧实现在单位空间里「先旋转后缩放」，
+  // 对非圆截面（rx≠rz）会产生与真实 cushion 完全不同的轮廓，旋转角越大偏差越大。
+  // opts：kind==='ball' 传 {rot: 弧度, ox: 球心 x 偏移}；noRot=true 时忽略旋转角
+  //       （用于推算与旋转无关的布局基准，见 buildFootprint）
   function wristFootprint(kind, opts = {}) {
     const raw = [];
     if (kind === 'full') {
       const rx = P.wW / 2, ry = P.wD / 2, k = P.wMorph;
-      const rad = THREE.MathUtils.degToRad(P.wMorphRot || 0);
+      const rad = opts.noRot ? 0 : THREE.MathUtils.degToRad(P.wMorphRot || 0);
       const c = Math.cos(rad), s = Math.sin(rad);
+      // 足迹取「垫身坐标系下最左/最右两点之间、且经过最前端」的那半条轮廓：
+      // 未旋转时即 t∈[0,π]；旋转后轮廓最宽点随之偏移 t0，两端接缝仍落在最宽处，
+      // 否则旋转后会把侧缘切掉或留下缺口（t0 处 x 取极值，恒为正 → 起点是最右点）
+      const t0 = Math.atan2(ry * s, rx * c);
       for (let i = 0; i <= BSTEPS; i++) {
-        const t = (i / BSTEPS) * Math.PI;          // 0..π，右→左沿前半圆
+        const t = t0 + (i / BSTEPS) * Math.PI;     // 右→左沿前半圈
         const x0u = Math.cos(t), z0u = Math.sin(t);
-        // 标准朝向先变形（肾型形状固定），再整体旋转，与 3D 侧 wristGroup.rotation.y 一致
+        // 标准朝向先变形（肾型形状固定），旋转在缩放之后统一施加
         let x1u = x0u, z1u = z0u;
         if (k > 0) {
           const g = Math.exp(-((x0u / 0.55) ** 2));
@@ -587,23 +594,23 @@ function makeClassicShape() {
           z1u = z0u - k * 0.55 * g * front * front;
           x1u = x0u * (1 + k * 0.12);
         }
-        raw.push({
-          x: (c * x1u - s * z1u) * rx,
-          z: (s * x1u + c * z1u) * ry,
-        });
+        const px = x1u * rx, pz = z1u * ry;        // 缩放（mesh.scale）
+        raw.push({ x: c * px + s * pz,             // 绕 y 旋转，与 wristGroup.rotation.y 同向
+                   z: -s * px + c * pz });
       }
     } else if (kind === 'ball') {
-      // 单个双球：单位球 → 鹅蛋变形 → 绕 y 旋 wRot → 缩放 → 平移
+      // 单个双球：单位球 → 鹅蛋变形 → 缩放 → 绕 y 旋 wRot → 平移
       const sx = P.wBW / 2, sz = P.wD / 2, e = P.wEgg;
-      const rad = opts.rot || 0;
+      const rad = opts.noRot ? 0 : (opts.rot || 0);
       const c = Math.cos(rad), s = Math.sin(rad);
       const ox = opts.ox || 0;
       for (let i = 0; i <= BSTEPS; i++) {
         const t = (i / BSTEPS) * Math.PI;          // 0..π，右→左沿前半圆
         let xu = Math.cos(t), zu = Math.sin(t);
         if (e) xu *= (1 + e * zu);                 // 鹅蛋：x 随 z 缩放
-        const xr = c * xu + s * zu, zr = -s * xu + c * zu;
-        raw.push({ x: ox + xr * sx, z: zr * sz });
+        const px = xu * sx, pz = zu * sz;          // 缩放（mesh.scale）
+        raw.push({ x: ox + (c * px + s * pz),      // 绕 y 旋转（mesh.rotation.y）
+                   z: -s * px + c * pz });
       }
     } else { // none：无腕托时用一段扁椭圆作为底边足迹（局部坐标，中心在原点）
       const rx = P.padW / 2, ry = P.padW * 0.25;
@@ -627,15 +634,15 @@ function makeClassicShape() {
   }
 
   // 偏移折线去环：交叉时保留最外圈（修复凹槽附近偏移自交）
-  function removeOffsetLoops() {
+  function removeOffsetLoops(pts) {
     for (let pass = 0; pass < 6; pass++) {
       let done = true;
       outer:
-      for (let i = 0; i < bottomPts.length - 1; i++) {
-        for (let j = i + 2; j < bottomPts.length - 1; j++) {
-          const hit = segHit(bottomPts[i], bottomPts[i + 1], bottomPts[j], bottomPts[j + 1]);
+      for (let i = 0; i < pts.length - 1; i++) {
+        for (let j = i + 2; j < pts.length - 1; j++) {
+          const hit = segHit(pts[i], pts[i + 1], pts[j], pts[j + 1]);
           if (hit) {
-            bottomPts.splice(i + 1, j - i, hit);
+            pts.splice(i + 1, j - i, hit);
             done = false;
             break outer;
           }
@@ -645,9 +652,9 @@ function makeClassicShape() {
     }
   }
 
-  // 把“原始足迹”沿曲线法向向外偏移 M，写入 bottomPts
-  // raw 必须按 右→左 顺序排列（bottomPts[0] 为右下，末尾为左下）
-  function offsetFootprint(raw, pushEdges) {
+  // 把“原始足迹”沿曲线法向向外偏移 M，写入 out
+  // raw 必须按 右→左 顺序排列（out[0] 为右下，末尾为左下）
+  function offsetFootprint(raw, pushEdges, out) {
     for (let i = 0; i < raw.length; i++) {
       const p = raw[i];
       const prev = raw[Math.max(0, i - 1)];
@@ -658,109 +665,120 @@ function makeClassicShape() {
       let nx = dz / len, nz = -dx / len;
       const rlen = Math.hypot(p.x, p.z) || 1;
       if (nx * (p.x / rlen) + nz * (p.z / rlen) < 0) { nx = -nx; nz = -nz; }
-      bottomPts.push({ x: p.x + nx * M, y: -(zBase + p.z + nz * M) });
+      out.push({ x: p.x + nx * M, y: -(zBase + p.z + nz * M) });
     }
     if (pushEdges) {
       rawEdgeR = raw[0].x;
       rawEdgeL = raw[raw.length - 1].x;
     }
-    removeOffsetLoops();
+    removeOffsetLoops(out);
   }
 
-  if (P.wristStyle === 'full') {
-    offsetFootprint(wristFootprint('full'), true);
-  } else if (P.wristStyle === 'balls') {
-    const rot = THREE.MathUtils.degToRad(P.wRot);
-    const half = P.wGap / 2;
-    const rxb = P.wBW / 2;
-    // 右球：右→左；左球：右→左
-    const rightBall = wristFootprint('ball', { rot: -rot, ox: half });
-    const leftBall  = wristFootprint('ball', { rot:  rot, ox: -half });
+  // 生成一段完整足迹折线（含 overhang 偏移）写入 out。
+  // noRot=true 时按“未旋转”状态生成，只用于推算与旋转角无关的布局基准
+  // （垫身总长 + 腕托前后位置），使旋转腕托不再牵动整垫尺寸与腕托位移。
+  function buildFootprint(out, noRot) {
+    if (P.wristStyle === 'full') {
+      offsetFootprint(wristFootprint('full', { noRot }), !noRot, out);
+    } else if (P.wristStyle === 'balls') {
+      const rot = noRot ? 0 : THREE.MathUtils.degToRad(P.wRot);
+      const half = P.wGap / 2;
+      const rxb = P.wBW / 2;
+      // 右球：右→左；左球：右→左
+      const rightBall = wristFootprint('ball', { rot: -rot, ox: half, noRot });
+      const leftBall  = wristFootprint('ball', { rot:  rot, ox: -half, noRot });
 
-    // 足迹曲线 i 点的前向切线（中心差分）
-    function tanAt(arr, i) {
-      const a = arr[Math.max(0, i - 1)], b = arr[Math.min(arr.length - 1, i + 1)];
-      const l = Math.hypot(b.x - a.x, b.z - a.z) || 1;
-      return { x: (b.x - a.x) / l, z: (b.z - a.z) / l };
-    }
-
-    // 双球间过渡弧：以两端切线做三次 Hermite 桥，替换/连接两侧弧段
-    // kA/kB = 每侧被替换的采样数（0=保留原始相交尖角）
-    // n = 桥采样密度
-    function bridge(rawR, iA, rawL, iB, kA, kB, n) {
-      const A = rawR[iA], B = rawL[iB];
-      const mA = tanAt(rawR, iA), mB = tanAt(rawL, iB);
-      // 切线臂长 ≈ 被替换的弧弦长，且不超过两端距离的一半
-      const chordAB = Math.hypot(B.x - A.x, B.z - A.z);
-      const armA = Math.min(Math.hypot(rawR[Math.min(iA + kA, BSTEPS)].x - A.x,
-                                        rawR[Math.min(iA + kA, BSTEPS)].z - A.z) * 0.9,
-                            chordAB * 0.45);
-      const armB = Math.min(Math.hypot(rawL[Math.max(iB - kB, 0)].x - B.x,
-                                        rawL[Math.max(iB - kB, 0)].z - B.z) * 0.9,
-                            chordAB * 0.45);
-      const out = [];
-      for (let j = 1; j <= n; j++) {
-        const t = j / (n + 1), u = 1 - t;
-        out.push({
-          x: u*u*u*A.x + 3*u*u*t*(A.x + mA.x*armA) + 3*u*t*t*(B.x - mB.x*armB) + t*t*t*B.x,
-          z: u*u*u*A.z + 3*u*u*t*(A.z + mA.z*armA) + 3*u*t*t*(B.z - mB.z*armB) + t*t*t*B.z,
-        });
+      // 足迹曲线 i 点的前向切线（中心差分）
+      function tanAt(arr, i) {
+        const a = arr[Math.max(0, i - 1)], b = arr[Math.min(arr.length - 1, i + 1)];
+        const l = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+        return { x: (b.x - a.x) / l, z: (b.z - a.z) / l };
       }
-      return { pts: out };
-    }
 
-    let raw;
-    if (half < rxb) {
-      // 两球重叠：找两曲线最近点对作为交接处
-      let bi = 0, bj = 0, bd = Infinity;
-      for (let i = 0; i <= BSTEPS; i++) {
-        for (let j = 0; j <= BSTEPS; j++) {
-          const dx = rightBall[i].x - leftBall[j].x;
-          const dz = rightBall[i].z - leftBall[j].z;
-          const dd = dx * dx + dz * dz;
-          if (dd < bd) { bd = dd; bi = i; bj = j; }
+      // 双球间过渡弧：以两端切线做三次 Hermite 桥，替换/连接两侧弧段
+      // kA/kB = 每侧被替换的采样数（0=保留原始相交尖角）
+      // n = 桥采样密度
+      function bridge(rawR, iA, rawL, iB, kA, kB, n) {
+        const A = rawR[iA], B = rawL[iB];
+        const mA = tanAt(rawR, iA), mB = tanAt(rawL, iB);
+        // 切线臂长 ≈ 被替换的弧弦长，且不超过两端距离的一半
+        const chordAB = Math.hypot(B.x - A.x, B.z - A.z);
+        const armA = Math.min(Math.hypot(rawR[Math.min(iA + kA, BSTEPS)].x - A.x,
+                                          rawR[Math.min(iA + kA, BSTEPS)].z - A.z) * 0.9,
+                              chordAB * 0.45);
+        const armB = Math.min(Math.hypot(rawL[Math.max(iB - kB, 0)].x - B.x,
+                                          rawL[Math.max(iB - kB, 0)].z - B.z) * 0.9,
+                              chordAB * 0.45);
+        const bpts = [];
+        for (let j = 1; j <= n; j++) {
+          const t = j / (n + 1), u = 1 - t;
+          bpts.push({
+            x: u*u*u*A.x + 3*u*u*t*(A.x + mA.x*armA) + 3*u*t*t*(B.x - mB.x*armB) + t*t*t*B.x,
+            z: u*u*u*A.z + 3*u*u*t*(A.z + mA.z*armA) + 3*u*t*t*(B.z - mB.z*armB) + t*t*t*B.z,
+          });
+        }
+        return { pts: bpts };
+      }
+
+      let raw;
+      if (half < rxb) {
+        // 两球重叠：找两曲线最近点对作为交接处
+        let bi = 0, bj = 0, bd = Infinity;
+        for (let i = 0; i <= BSTEPS; i++) {
+          for (let j = 0; j <= BSTEPS; j++) {
+            const dx = rightBall[i].x - leftBall[j].x;
+            const dz = rightBall[i].z - leftBall[j].z;
+            const dd = dx * dx + dz * dz;
+            if (dd < bd) { bd = dd; bi = i; bj = j; }
+          }
+        }
+        // 用独立过渡弧替换交点附近的原始相交尖角
+        const wJoin = P.wJoin != null ? P.wJoin : 16;
+        if (wJoin > 0 && bi >= 2 && bj <= BSTEPS - 2) {
+          const kA = Math.min(wJoin, bi - 1);
+          const kB = Math.min(wJoin, BSTEPS - 1 - bj);
+          const br = bridge(rightBall, bi - kA, leftBall, bj + kB, kA, kB, Math.max(10, kA));
+          raw = rightBall.slice(0, bi - kA + 1).concat(br.pts, leftBall.slice(bj + kB));
+        } else {
+          raw = rightBall.slice(0, bi + 1).concat(leftBall.slice(bj));
+        }
+      } else {
+        // 两球分离：同样插入一段独立过渡弧连接两球边缘
+        const wJoin = P.wJoin != null ? P.wJoin : 16;
+        const kSep = Math.max(2, Math.min(30, Math.round(BSTEPS * wJoin / 16 * 0.12)));
+        if (wJoin > 0 && BSTEPS - kSep >= 1 && kSep <= BSTEPS - 1) {
+          // 从两球相向端各回退若干采样，用过渡弧连接
+          const br = bridge(rightBall, BSTEPS - kSep, leftBall, kSep, kSep, kSep,
+                            Math.max(12, kSep));
+          raw = rightBall.slice(0, BSTEPS - kSep + 1).concat(br.pts, leftBall.slice(kSep));
+        } else {
+          raw = rightBall.concat(leftBall);
         }
       }
-      // 用独立过渡弧替换交点附近的原始相交尖角
-      const wJoin = P.wJoin != null ? P.wJoin : 16;
-      if (wJoin > 0 && bi >= 2 && bj <= BSTEPS - 2) {
-        const kA = Math.min(wJoin, bi - 1);
-        const kB = Math.min(wJoin, BSTEPS - 1 - bj);
-        const br = bridge(rightBall, bi - kA, leftBall, bj + kB, kA, kB, Math.max(10, kA));
-        raw = rightBall.slice(0, bi - kA + 1).concat(br.pts, leftBall.slice(bj + kB));
-      } else {
-        raw = rightBall.slice(0, bi + 1).concat(leftBall.slice(bj));
-      }
+      offsetFootprint(raw, !noRot, out);
     } else {
-      // 两球分离：同样插入一段独立过渡弧连接两球边缘
-      const wJoin = P.wJoin != null ? P.wJoin : 16;
-      const kSep = Math.max(2, Math.min(30, Math.round(BSTEPS * wJoin / 16 * 0.12)));
-      if (wJoin > 0 && BSTEPS - kSep >= 1 && kSep <= BSTEPS - 1) {
-        // 从两球相向端各回退若干采样，用过渡弧连接
-        const br = bridge(rightBall, BSTEPS - kSep, leftBall, kSep, kSep, kSep,
-                          Math.max(12, kSep));
-        raw = rightBall.slice(0, BSTEPS - kSep + 1).concat(br.pts, leftBall.slice(kSep));
-      } else {
-        raw = rightBall.concat(leftBall);
-      }
+      offsetFootprint(wristFootprint('none'), !noRot, out);
     }
-    offsetFootprint(raw, true);
-  } else {
-    offsetFootprint(wristFootprint('none'), true);
   }
+  buildFootprint(bottomPts, false);
 
   // 阶段二：由腕托足迹推算总长，并把足迹平移到最终坐标系（原点=垫身中心）。
   // 局部坐标下 bottomPts.y = -(足迹 z)，故足迹最靠顶部处 y 最小、最靠底边处 y 最大。
-  let yMinL = Infinity, yMaxL = -Infinity;
-  for (const p of bottomPts) {
-    if (p.y < yMinL) yMinL = p.y;
-    if (p.y > yMaxL) yMaxL = p.y;
+  // ⚠️ 布局基准一律取「未旋转」的足迹（buildFootprint(_, true)）：旋转只改变包裹轮廓的
+  // 外形，不再改变垫身总长与腕托前后位置。旧实现直接用旋转后足迹的纵向跨度反推总长，
+  // 而该跨度随旋转角变化（侧缘点绕中心摆动）→ 垫身被拉长/缩短、腕托整体前后平移。
+  const refPts = [];
+  buildFootprint(refPts, true);
+  let refYMin = Infinity, refYMax = -Infinity;
+  for (const p of refPts) {
+    if (p.y < refYMin) refYMin = p.y;
+    if (p.y > refYMax) refYMax = p.y;
   }
   const gapTop = Math.max(1, P.wristTopGap);
-  const padH = (yMaxL + P.wPos) - (yMinL - gapTop);
+  const padH = (refYMax + P.wPos) - (refYMin - gapTop);
   classicPadHCache = padH;
   // 平移：腕托最底端到底边保留 wPos 的距离
-  const dy = (-padH / 2 + P.wPos) - yMaxL;
+  const dy = (-padH / 2 + P.wPos) - refYMax;
   // 导出腕托中心的 z 基准，供腕托实体摆放复用，确保与轮廓严格同源
   classicZBaseCache = -dy;
   for (const p of bottomPts) p.y += dy;
