@@ -416,6 +416,17 @@ function makeTex(url, cb) {
     cb(t);
   });
 }
+// 替换 / 清空槽位贴图：必须先 dispose 旧纹理。
+// 反复上传或反复导入配置时，旧 Texture 会一直占着显存（GPU 侧不会随 JS 引用消失自动回收）。
+// 调用方需在之后触发 rebuild()，使材质重新绑定新 map（旧 map 已被释放）。
+function setTex(slot, t) {
+  if (slot === 1) { if (tex1) tex1.dispose(); tex1 = t; }
+  else { if (tex2) tex2.dispose(); tex2 = t; }
+}
+function clearTex(slot) {
+  if (slot === 1) { if (tex1) tex1.dispose(); tex1 = null; }
+  else { if (tex2) tex2.dispose(); tex2 = null; }
+}
 const WRAP_MODES = {
   clamp: THREE.ClampToEdgeWrapping,    // 不重复，边缘颜色延伸
   cutout: THREE.ClampToEdgeWrapping,   // 不重复，超出部分镂空（透出底色）
@@ -447,6 +458,15 @@ let padMesh = null, wristGroup = null;
 const allMats = [];
 
 function regMat(m) { allMats.push(m); m.envMapIntensity = P.env; return m; }
+// 注销并释放材质：dispose 后必须同步移出 allMats，
+// 否则数组随 rebuild() 无限增长（updateLights 每次遍历全量写 envMapIntensity），
+// 形成内存 + 遍历开销双重泄漏（实测 30 次 rebuild：allMats 2 → 62）。
+function unregMat(m) {
+  if (!m) return;
+  const i = allMats.indexOf(m);
+  if (i >= 0) allMats.splice(i, 1);
+  m.dispose();
+}
 
 // 经典款的垫身总长为派生值：腕托足迹（含 overhang）纵向跨度 + 腕托顶距。
 // 缓存由 makeClassicShape() 每次重建时写入，其余消费点（UV/zBase）统一读取，
@@ -949,7 +969,8 @@ function buildPad() {
   if (padMesh) {
     scene.remove(padMesh);
     padMesh.geometry.dispose();
-    padMesh.material.forEach(m => m.dispose());
+    // edgeSame 时顶/边共用同一材质实例，先去重再注销，避免重复 dispose
+    [...new Set(padMesh.material)].forEach(unregMat);
   }
   const geo = new THREE.ExtrudeGeometry(makeShape(), {
     depth: P.thick,
@@ -1011,10 +1032,11 @@ function buildWrist(topY) {
     scene.remove(wristGroup);
     wristGroup.children.forEach(c => c.geometry.dispose());
   }
+  // 无论款式如何都要注销旧腕托材质；切到「无腕托」时若漏掉，材质会一直滞留在 allMats 与显存中
+  if (wristMat) { unregMat(wristMat); wristMat = null; }
   wristGroup = new THREE.Group();
   wristGroup.visible = true;   // 编辑模式下也显示腕托，以呈现真实渲染状况（覆盖层在 DOM 顶层，仍可拖拽）
   if (P.wristStyle !== 'none') {
-    if (wristMat) wristMat.dispose();
     // 裁剪掉低于鼠标垫下表面的部分
     const clip = new THREE.Plane(new THREE.Vector3(0, 1, 0), P.thick / 2 + P.bevel + 0.01);
     wristMat = blendMat(tex2 || tex1, () => (tex2 ? P.t2 : P.t1).wrap, Math.min(1, P.rough + 0.1));
@@ -1406,14 +1428,14 @@ function setDZPreview(dz, url, onClear) {
 }
 bindDropzone('dz1', 'file1', (url, dz) => {
   makeTex(url, t => {
-    tex1 = t; refreshTextures(); rebuild();
-    setDZPreview(dz, url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { tex1 = null; rebuild(); }));
+    setTex(1, t); refreshTextures(); rebuild();
+    setDZPreview(dz, url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); }));
   });
 });
 bindDropzone('dz2', 'file2', (url, dz) => {
   makeTex(url, t => {
-    tex2 = t; refreshTextures(); rebuild();
-    setDZPreview(dz, url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { tex2 = null; refreshTextures(); rebuild(); }));
+    setTex(2, t); refreshTextures(); rebuild();
+    setDZPreview(dz, url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); }));
   });
 });
 function resetDZ(id, html, clearFn) {
@@ -1526,11 +1548,11 @@ stage.addEventListener('drop', e => {
   rd.onload = () => {
     const url = rd.result;
     if (!tex1) {
-      makeTex(url, t => { tex1 = t; refreshTextures(); rebuild();
-        setDZPreview(document.getElementById('dz1'), url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { tex1 = null; rebuild(); })); });
+      makeTex(url, t => { setTex(1, t); refreshTextures(); rebuild();
+        setDZPreview(document.getElementById('dz1'), url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); })); });
     } else {
-      makeTex(url, t => { tex2 = t; refreshTextures(); rebuild();
-        setDZPreview(document.getElementById('dz2'), url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { tex2 = null; refreshTextures(); rebuild(); })); });
+      makeTex(url, t => { setTex(2, t); refreshTextures(); rebuild();
+        setDZPreview(document.getElementById('dz2'), url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); })); });
     }
   };
   rd.readAsDataURL(file);
@@ -2019,6 +2041,10 @@ function exportPNG(opts) {
     P.transparent = P.exportTransparent;
     updateBackground();
   }
+  // 必须先置 pixelRatio=1：renderer.setSize 内部会再乘一次 pixelRatio，
+  // 否则高分屏（dpr=2）上 2x 导出实际得到 4x、3x 得到 6x，极易超出浏览器画布上限。
+  const prevPixelRatio = renderer.getPixelRatio();
+  renderer.setPixelRatio(1);
   renderer.setSize(w * scale, h * scale, false);
   renderer.render(scene, useCam);
   const url = renderer.domElement.toDataURL('image/png');
@@ -2027,8 +2053,9 @@ function exportPNG(opts) {
     P.transparent = prevTransparent;
     updateBackground();
   }
+  // 恢复顺序：先按 CSS 尺寸 setSize（此时 pixelRatio 仍为 1，不产生超大中间画布），再恢复 pixelRatio
   renderer.setSize(w, h, false);
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setPixelRatio(prevPixelRatio);
   if (download) {
     const a = document.createElement('a');
     a.href = url; a.download = 'mousepad-3d-preview.png'; a.click();
@@ -2053,6 +2080,9 @@ function exportModelPNG(opts) {
   // 保存原状态
   const prevTransparent = P.transparent;
   const prevShadow = shadowPlane.visible;
+  // 与 exportPNG 同理：导出期间置 pixelRatio=1，避免倍率被 dpr 二次放大
+  const prevPixelRatio = renderer.getPixelRatio();
+  renderer.setPixelRatio(1);
   const persp = useCam.isPerspectiveCamera;
   let saved = null;
   if (persp) {
@@ -2124,7 +2154,7 @@ function exportModelPNG(opts) {
       useCam.updateProjectionMatrix();
     }
     renderer.setSize(stage.clientWidth, stage.clientHeight, false);
-    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setPixelRatio(prevPixelRatio);
   }
 }
 
@@ -2280,9 +2310,9 @@ async function importConfigFile(file) {
       const mime = name.endsWith('.png') ? 'image/png' : name.endsWith('.jpg') || name.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
       const dataURL = `data:${mime};base64,` + b64FromBytes(data);
       if (slot === 1) {
-        makeTex(dataURL, t => { tex1 = t; refreshTextures(); rebuild(); setDZPreview(document.getElementById('dz1'), dataURL, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { tex1 = null; rebuild(); })); });
+        makeTex(dataURL, t => { setTex(1, t); refreshTextures(); rebuild(); setDZPreview(document.getElementById('dz1'), dataURL, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); })); });
       } else {
-        makeTex(dataURL, t => { tex2 = t; refreshTextures(); rebuild(); setDZPreview(document.getElementById('dz2'), dataURL, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { tex2 = null; refreshTextures(); rebuild(); })); });
+        makeTex(dataURL, t => { setTex(2, t); refreshTextures(); rebuild(); setDZPreview(document.getElementById('dz2'), dataURL, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); })); });
       }
     }
   } else {
