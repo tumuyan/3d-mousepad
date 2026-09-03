@@ -384,7 +384,7 @@ renderer.localClippingEnabled = true;
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, 1, 1, 6000);
 // 编辑态专用正交相机：正俯视，Shape-X 映屏幕 X，Shape-Y 映世界 -Z 映屏幕 Y。
-// 使用独立相机意味着渲染与覆盖层投影严格同源、aspect 由 setEditOrtho 同步计算，
+// 使用独立相机意味着渲染与覆盖层投影严格同源、aspect 由 applyEditOrtho 同步计算，
 // 无需依赖 PerspectiveCamera 的退化 lookAt 或 up 向量。
 let orthoCam = null;       // 延迟创建（需要等 stage 拿到尺寸后才能正确设置 left/right/top/bottom）
 // 透视视角：相机在水平面上绕 Z 轴逆时针 45°，再抬高
@@ -1181,7 +1181,8 @@ function rebuild(padOnly) {
   if (padOnly) dbg.padOnly++; else buildWrist(topY);
   const t2 = tNow();
   markOverlayDirty();              // 几何变了：锚点世界坐标、顶面高度都可能跟着变
-  if (curveEdit) setEditOrtho();   // 几何/尺寸变了，正交视口要跟着缩放
+  // 注意：此处**不**重算正交视口。视口只在 fitEditOrtho() 的明确入口更新，
+  // 否则拖锚点会因包围盒变化导致画面边拖边缩放（详见 cvCx/cvCy/cvHalf 处的说明）。
   const t3 = tNow();
   if (dbgRebuild) dbgReport(t0, t1, t2, t3);
 }
@@ -1324,7 +1325,7 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   // 宽度/圆角仅作用于非经典轮廓，经典款由腕托足迹 + 贝塞尔锚点决定，故归入 nonClassicRows 隐藏
   const nonClassicRows = [
     // 名称为"基础…"：这两个值是**倒角前**的轮廓尺寸，成品外廓还会再大 1.8 × 边缘倒角
-    slider(el, '基础宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); if (curveEdit) setEditOrtho(); },
+    slider(el, '基础宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); if (curveEdit) fitEditOrtho(); },
       '轮廓宽度（mm）。成品外廓 = 该值 + 1.8 × 边缘倒角'),
     slider(el, '基础长度', 150, 340, 1, () => P.padH, v => { P.padH = v; rebuild(); },
       '轮廓长度（mm）。成品外廓 = 该值 + 1.8 × 边缘倒角'),
@@ -1333,18 +1334,33 @@ texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 
   // 经典款：上半轮廓由贝塞尔锚点决定，仅保留驱动足迹与总长的两个参数。
   // 拖动这两个滑条只平移两端 pin 锚点，用户拖出的形状不会被重置。
   const classicRows = [
-    slider(el, '腕托顶距', 40, 240, 1, () => P.wristTopGap, v => { P.wristTopGap = v; rebuild(); if (curveEdit) setEditOrtho(); }),
+    slider(el, '腕托顶距', 40, 240, 1, () => P.wristTopGap, v => { P.wristTopGap = v; rebuild(); if (curveEdit) fitEditOrtho(); }),
     checkRow(el, '编辑轮廓', () => curveEdit, v => setCurveEdit(v)),
-    slider(el, '外形超出腕托', 0, 10, 0.01, () => P.wMargin, v => { P.wMargin = v; rebuild(); if (curveEdit) setEditOrtho(); }),
+    slider(el, '外形超出腕托', 0, 10, 0.01, () => P.wMargin, v => { P.wMargin = v; rebuild(); if (curveEdit) fitEditOrtho(); }),
   ];
-  // 在“编辑轮廓”行右侧放“重置锚点”按钮
+  // 在“编辑轮廓”行右侧放“重置锚点”/“适应视图”按钮。
+  // 注意必须挂到 .row 上：classicRows[1] 是 checkbox 这个 void 元素，
+  // 直接 appendChild 到它上面的子元素不会渲染（按钮会凭空消失）。
   {
-    const editRow = classicRows[1];
-    const resetBtn = document.createElement('button');
-    resetBtn.textContent = '重置锚点';
-    resetBtn.style.cssText = 'margin-left:8px;padding:3px 10px;border:0;border-radius:5px;background:#3a4150;color:#e6e9ef;cursor:pointer;font-size:12px';
-    resetBtn.onclick = () => { P.classicCtrl = structuredClone(DEFAULT_CLASSIC_CTRL); refreshShapeUI(); rebuild(true); if (curveEdit) drawCurveOverlay(); };
-    editRow.appendChild(resetBtn);
+    const editRow = classicRows[1].closest('.row');
+    const mkBtn = (text, title, onClick) => {
+      const b = document.createElement('button');
+      b.textContent = text; b.title = title;
+      b.style.cssText = 'padding:3px 10px;border:0;border-radius:5px;background:#3a4150;color:#e6e9ef;cursor:pointer;font-size:12px';
+      b.onclick = onClick;
+      editRow.appendChild(b);
+      return b;
+    };
+    mkBtn('重置锚点', '把全部锚点恢复为默认轮廓', () => {
+      P.classicCtrl = structuredClone(DEFAULT_CLASSIC_CTRL);
+      refreshShapeUI(); rebuild(true);
+      if (curveEdit) { fitEditOrtho(); drawCurveOverlay(); }
+    });
+    // 视口已与 rebuild 解耦（拖锚点不再自动缩放），
+    // 锚点被拖到画面外时需要一个手动 fit 入口把它找回来。
+    mkBtn('适应视图', '重新缩放平移，使整个轮廓回到画面中（拖动锚点时视口保持不变）', () => {
+      if (curveEdit) { fitEditOrtho(); drawCurveOverlay(); }
+    });
   }
   window.refreshShapeUI = () => {
     const isClassic = P.shape === 'classic';
@@ -1725,7 +1741,7 @@ let overlayDirty = false;    // 脏标记：为真时主循环重绘一次叠加
 let lastOverlayKey = '';     // 叠加层输入指纹：脏标记的兜底，防止漏置脏时锚点停在旧位置
 let cvW = 0, cvH = 0;        // 叠加层 CSS 像素尺寸，由 resizeCurveLayer() 缓存（避免每帧读布局）
 
-// 任何会改变叠加层画面的入口都要置脏：几何（rebuild）、视锥（setEditOrtho）、
+// 任何会改变叠加层画面的入口都要置脏：几何（rebuild）、视锥（applyEditOrtho / fitEditOrtho）、
 // 画布尺寸与变换（resizeCurveLayer）。置脏只保证"尽快重绘"，不保证"不漏"，
 // 漏置脏的兜底由 overlayKey() 指纹负责，二者缺一不可。
 function markOverlayDirty() { overlayDirty = true; }
@@ -1741,13 +1757,46 @@ function buildOrtho() {
   orthoCam.updateMatrixWorld(true);
 }
 
-function setEditOrtho() {
+// 编辑态视口状态：中心 (cvCx, cvCy) 与纵向半幅 cvHalf，单位均为 Shape 坐标（≈mm）。
+//
+// 为什么视口状态要从 rebuild() 里拆出来：
+// 旧实现在 rebuild() 里无条件调用 setEditOrtho()，而后者按 makeClassicShape() 的
+// 包围盒重算视锥（中心 + 半幅）。拖锚点会改变包围盒 → 视锥跟着平移 + 缩放 →
+// 屏幕↔形状映射随之改变 → screenToShape() 把同一个光标位置解算成新的形状坐标
+// → 锚点被继续"推走" → 包围盒再变，形成边拖边缩放的正反馈，手感完全失控。
+// 现在 rebuild() 只重建几何、不动视口；视口只在下面这些明确入口重新 fit：
+//   进入编辑 / 重置锚点 / 导入配置 / 窗口 resize / 足迹类滑条（基础宽度、腕托顶距、外形超出腕托）。
+// 拖锚点、双击加点、右键删点期间视口完全锁定。
+let cvCx = 0, cvCy = 0, cvHalf = 150;
+const ZOOM_MARGIN = 1.35;   // fit 时给包围盒留的余量，便于编辑贴边锚点
+
+// 按当前视口状态 + 画布 aspect 应用视锥，不重新 fit。
+// 画布尺寸变化走这里：纵向半幅保持不变，只是横向留白随 aspect 伸缩，画面不会无端缩放。
+function applyEditOrtho() {
   if (!orthoCam) buildOrtho();
-  // 用 makeClassicShape() 实际边界做正交视锥，使视锥中心对齐模型几何中心，
-  // 视锥严格覆盖 shape bbox：长边等于 shape 对应方向半幅，短边方向按 stage aspect 反推（可能留白），
-  // 视锥中心 = shape 几何中心。这样 mouse pad 居中显示，蓝线与 3D 模型像素级重合。
-  const w = stage.clientWidth, h = stage.clientHeight;
-  let cx = 0, cy = 0, halfX = 120, halfY = 120;
+  if (!cvW || !cvH) resizeCurveLayer();   // 尺寸未缓存时先取一次，保证与绘制同源
+  const aspect = cvW / cvH;
+  // 纵向半幅固定为 cvHalf，横向由 stage aspect 反推（可能留白），保证不裁剪。
+  if (aspect >= 1) {
+    orthoCam.top = cvCy + cvHalf;
+    orthoCam.bottom = cvCy - cvHalf;
+    orthoCam.left = cvCx - cvHalf * aspect;
+    orthoCam.right = cvCx + cvHalf * aspect;
+  } else {
+    orthoCam.left = cvCx - cvHalf;
+    orthoCam.right = cvCx + cvHalf;
+    orthoCam.top = cvCy + cvHalf / aspect;
+    orthoCam.bottom = cvCy - cvHalf / aspect;
+  }
+  orthoCam.updateProjectionMatrix();
+  orthoCam.updateMatrixWorld(true);
+  markOverlayDirty();   // 视锥变了：锚点屏幕坐标必然变（含"只平移不缩放"的情形）
+}
+
+// 按 makeClassicShape() 的实际包围盒重新 fit 视口：中心对齐几何中心，
+// 纵向半幅取两方向半幅的较大者（保证不裁剪），短边方向由 aspect 反推（可能留白）。
+function fitEditOrtho() {
+  let cx = cvCx, cy = cvCy, halfX = 120, halfY = 120;   // 取点失败时沿用旧视口
   try {
     const sh = makeClassicShape();
     const pts = sh.getPoints ? sh.getPoints(400) : [];
@@ -1763,25 +1812,9 @@ function setEditOrtho() {
       halfY = (maxY - minY) / 2;
     }
   } catch (e) {}
-  const aspect = w / h;
-  // 取较大的那半幅作为视锥短边方向半幅（保证不裁剪），长边方向由 stage aspect 反推。
-  // 乘 ZOOM_MARGIN 放大视锥，使模型在画布中留出余量，便于编辑贴边锚点。
-  const ZOOM_MARGIN = 1.35;
-  const baseHalf = Math.max(halfX, halfY) * ZOOM_MARGIN;
-  if (aspect >= 1) {
-    orthoCam.top = cy + baseHalf;
-    orthoCam.bottom = cy - baseHalf;
-    orthoCam.left = cx - baseHalf * aspect;
-    orthoCam.right = cx + baseHalf * aspect;
-  } else {
-    orthoCam.left = cx - baseHalf;
-    orthoCam.right = cx + baseHalf;
-    orthoCam.top = cy + baseHalf / aspect;
-    orthoCam.bottom = cy - baseHalf / aspect;
-  }
-  orthoCam.updateProjectionMatrix();
-  orthoCam.updateMatrixWorld(true);
-  markOverlayDirty();   // 视锥变了：锚点屏幕坐标必然变（含"只平移不缩放"的情形）
+  cvCx = cx; cvCy = cy;
+  cvHalf = Math.max(halfX, halfY) * ZOOM_MARGIN;
+  applyEditOrtho();
 }
 
 function setCurveEdit(on) {
@@ -1796,8 +1829,8 @@ function setCurveEdit(on) {
     setDragMode('view');
     modeHint.textContent = '编辑轮廓：拖圆点=移动锚点  拖方块=调切线  Shift=切线独立  双击=加点  右键=删点';
     modeHint.style.display = 'block';
-    setEditOrtho();
-    resizeCurveLayer();
+    resizeCurveLayer();   // 先缓存画布尺寸，fitEditOrtho() 要用它算 aspect
+    fitEditOrtho();
     drawCurveOverlay();
   } else {
     if (prevViewPos) {
@@ -2550,6 +2583,8 @@ async function importConfigFile(file) {
   }
   P.classicCtrl = cc || null;
   rebuild();
+  // 导入的锚点可能整体偏离当前视口；此时不在拖拽中，fit 不会造成干扰
+  if (curveEdit) fitEditOrtho();
   refreshShapeUI();
   if (window.refreshWristUI) window.refreshWristUI();
   uiSyncers.forEach(f => f());
@@ -2564,7 +2599,8 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  if (curveEdit) { setEditOrtho(); resizeCurveLayer(); drawCurveOverlay(); }
+  // 编辑态：先更新画布尺寸缓存，再按新 aspect 套用视口（不重新 fit，纵向比例保持不变）
+  if (curveEdit) { resizeCurveLayer(); applyEditOrtho(); drawCurveOverlay(); }
 }
 window.addEventListener('resize', resize);
 
@@ -2582,7 +2618,7 @@ resize();
   const renderCam = curveEdit && orthoCam ? orthoCam : camera;
   renderer.render(scene, renderCam);
   // 叠加层按需重绘：每帧最多一次。
-  //   overlayDirty  —— 常规路径，由 rebuild / setEditOrtho / resizeCurveLayer 显式置脏；
+  //   overlayDirty  —— 常规路径，由 rebuild / applyEditOrtho / resizeCurveLayer 显式置脏；
   //   overlayKey()  —— 兜底，直接比对绘制输入（含几何），任何漏置脏的变化也能捕获。
   // 旧实现是两段各自比较、且共用同一把 lastCamKey 而格式不同，导致每帧必重绘 2 次。
   if (curveEdit && (overlayDirty || overlayKey() !== lastOverlayKey)) drawCurveOverlay();
