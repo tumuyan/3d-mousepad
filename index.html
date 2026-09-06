@@ -674,7 +674,17 @@ const WRAP_MODES = {
 function applyTexParams(t, p) {
   if (!t) return;
   const w = WRAP_MODES[p.wrap] || THREE.ClampToEdgeWrapping;
-  t.wrapS = t.wrapT = w;
+  // ⚠️ needsUpdate 只该服务于 wrapS/wrapT：这两者是**采样器参数**，three.js 仅在
+  // uploadTexture() 里随纹理一起下发，改了必须 version++ 才生效。
+  // 而 center / repeat / offset / rotation 只进 texture.matrix，每帧由
+  // refreshTransformUniform 作 uniform 重算，不需要重传。
+  // 无条件置位的旧实现会让拖贴图滑条 / 画布拖拽 / 滚轮缩放时每次输入都重传整张图
+  // （实测：512² 贴图拖 20 次 = 20 次 texSubImage2D；4096² RGBA 约 64MB/次，拖动时 60 次/秒）。
+  if (t.userData.appliedWrap !== w) {
+    t.userData.appliedWrap = w;
+    t.wrapS = t.wrapT = w;
+    t.needsUpdate = true;
+  }
   t.center.set(0.5, 0.5);
   const a0 = t.image && t.image.height ? t.image.width / t.image.height : 1;
   const a = a0 * (p.asp || 1);
@@ -683,7 +693,7 @@ function applyTexParams(t, p) {
   t.repeat.set(p.s * fx, p.s * fy);
   t.offset.set(p.ox + (1 - p.s * fx) / 2, p.oy + (1 - p.s * fy) / 2);
   t.rotation = THREE.MathUtils.degToRad(p.r);
-  t.needsUpdate = true;
+  // 上面三行只改 texture.matrix（每帧作为 uniform 重算），此处**不要**再置 needsUpdate
 }
 function refreshTextures() {
   applyTexParams(tex1, P.t1);
@@ -1144,6 +1154,8 @@ function planarUV(geo) {
 //   贴图层 alpha = texelColor.a * uTexOpacity（贴图自身 alpha × 贴图不透明度）
 // 两者互不干扰，贴图 alpha 用于融合
 function patchMapBlend(mat, modeGetter) {
+  // 存下 getter：uCutout 只在编译期求值一次，切换重复模式后要靠它重新定值（见 updateCutout）
+  mat.userData.cutoutGetter = modeGetter;
   mat.onBeforeCompile = sh => {
     sh.uniforms.uCutout = { value: modeGetter() === 'cutout' ? 1 : 0 };
     sh.uniforms.uTexOpacity = { value: P.texOpacity };
@@ -1173,15 +1185,24 @@ function blendMat(map, modeGetter, rough) {
   patchMapBlend(m, modeGetter);
   return m;
 }
+// 材质变量集中声明：updateMatBase / updateMatRough / updateEdgeColor 都引用 wristMat，
+// 其旧声明位置在这些函数之后，靠「只被 UI 回调调用」才没踩 TDZ。上移后无此隐患。
 let padTopMat = null;
 let edgeMat = null;
+let wristMat = null;
+// 腕托粗糙度：略高于垫面（软质材料观感），上限 1。
+// ⚠️ buildWrist() 与 updateMatRough() 必须共用这一个定义：写死两份的话，调公式极易只改一处
+// ——表现是「拖滑条一个值、重建后跳到另一个值」，不报错，只能靠肉眼发现。
+const wristRough = () => Math.min(1, P.rough + 0.1);
+// 边缘粗糙度是常量，不随 P.rough 变化（见 updateMatRough 处说明）
+const EDGE_ROUGH = 0.85;
 const baseTopMat  = () => { padTopMat = blendMat(tex1, () => P.t1.wrap, P.rough); return padTopMat; };
 const baseEdgeMat = () => {
   if (P.edgeSame) {
     // 与上表面共享同一材质（含贴图与本色），整体着色
     edgeMat = padTopMat;
   } else {
-    edgeMat = regMat(new THREE.MeshStandardMaterial({ color: new THREE.Color(P.edgeColor), roughness: 0.85 }));
+    edgeMat = regMat(new THREE.MeshStandardMaterial({ color: new THREE.Color(P.edgeColor), roughness: EDGE_ROUGH }));
   }
   return edgeMat;
 };
@@ -1203,6 +1224,44 @@ function updateMatBase() {
     }
   });
   markRenderDirty();   // P1-2：材质色/透明度变了（不影响阴影）
+}
+
+// 表面粗糙度：只写材质的 roughness uniform（顶面 + 腕托），不碰几何 → 无需 rebuild。
+// 旧实现走 rebuild()，白白跑全量 ExtrudeGeometry + 腕托球体，还连带 markShadowDirty()
+// 重渲深度图（实测拖 10 次 = 11 次 rebuild，与真正需要重建的「基础厚度」次数完全相同）。
+// ⚠️ roughness 是 uniform，改它不需要 material.needsUpdate（那会触发着色器重编译）。
+//
+// 这里**不带 edgeMat** 是刻意为之，不是遗漏。edgeMat 只有两种形态（见 baseEdgeMat）：
+//   - edgeSame=true  → edgeMat 就是 padTopMat 同一个对象，改上面一行已覆盖
+//   - edgeSame=false → 独立材质，粗糙度固定 EDGE_ROUGH，从不读 P.rough
+// 两种情形都与 P.rough 无关，加了反而会破坏「非 edgeSame 时边缘恒定 0.85」的既有观感。
+// 已实测确认：GLB 材质读数里 PadEdge 恒 0.85（P.rough 取 0.2 / 0.8 均不变），
+// 且本路径与强制 rebuild 路径的材质读数、画面截图均逐字节相同（无残留陈旧状态）。
+function updateMatRough() {
+  if (padTopMat) padTopMat.roughness = P.rough;
+  if (wristMat) wristMat.roughness = wristRough();
+  markRenderDirty();   // 只影响画面，粗糙度不进深度图 → 不用 markShadowDirty()
+}
+// 边缘颜色：只写独立边缘材质的 color。
+// edgeSame 时边缘与顶面共用 padTopMat（改色无意义，rebuild 出来的结果同样如此），
+// 故此处只需判 edgeSame —— 非 edgeSame 时 baseEdgeMat 必建独立材质，不存在共用的情况。
+function updateEdgeColor() {
+  if (!P.edgeSame && edgeMat) edgeMat.color.set(P.edgeColor);
+  markRenderDirty();
+}
+// 重复模式（cutout / clamp）切换：只改 uCutout 这一个 uniform。
+// uCutout 由 onBeforeCompile 在编译期求值一次，旧实现靠 rebuild() 重建材质来刷新它，
+// 代价是全量 ExtrudeGeometry + 腕托球体 —— 而 wrap 本身完全不影响几何。
+// ⚠️ 顺序：必须先 refreshTextures()（应用 wrap 采样器参数），再调本函数。
+// ⚠️ 未编译过的材质没有 userData.shader，此处跳过是安全的：
+// 首次 onBeforeCompile 会读到切换后的值，结果一致。
+function updateCutout() {
+  for (const m of [padTopMat, wristMat]) {
+    const sh = m && m.userData.shader;
+    if (!sh || !m.userData.cutoutGetter) continue;
+    sh.uniforms.uCutout.value = m.userData.cutoutGetter() === 'cutout' ? 1 : 0;
+  }
+  markRenderDirty();
 }
 
 function buildPad() {
@@ -1234,7 +1293,6 @@ function buildPad() {
   return P.thick / 2 + P.bevel; // 顶面高度
 }
 
-let wristMat = null;
 function rebuildWristMat() {
   const map = tex2 || tex1;
   if (wristMat) { wristMat.map = map; wristMat.needsUpdate = true; }
@@ -1280,7 +1338,7 @@ function buildWrist(topY) {
   if (P.wristStyle !== 'none') {
     // 裁剪掉低于鼠标垫下表面的部分
     const clip = new THREE.Plane(new THREE.Vector3(0, 1, 0), P.thick / 2 + P.bevel + 0.01);
-    wristMat = blendMat(tex2 || tex1, () => (tex2 ? P.t2 : P.t1).wrap, Math.min(1, P.rough + 0.1));
+    wristMat = blendMat(tex2 || tex1, () => (tex2 ? P.t2 : P.t1).wrap, wristRough());
     wristMat.clippingPlanes = [clip];
 
     const ry = P.wH * 1.5;
@@ -1463,15 +1521,20 @@ function updateLights() {
   keyLight.intensity = P.key;
   keyLight.color.set(P.lightColor);
   const az = THREE.MathUtils.degToRad(P.az), el = THREE.MathUtils.degToRad(P.el);
-  keyLight.position.set(
-    500 * Math.cos(el) * Math.sin(az),
-    500 * Math.sin(el),
-    500 * Math.cos(el) * Math.cos(az)
-  );
+  // 阴影深度图只取决于「光源方位 + 投射体几何」，与光源强度/颜色、环境光、环境反射、
+  // 接收面可见性无关，故只在实际方位变化时置脏（主光方位 / 主光高度仍会正常触发）。
+  // 无条件置脏的旧实现让其余 5 个光照控件每次输入都白渲一次 2048² 深度图
+  // （实测拖「环境光」20 次 = 20 次离屏渲染，draw call 从 4/帧 涨到 8/帧）。
+  const px = 500 * Math.cos(el) * Math.sin(az);
+  const py = 500 * Math.sin(el);
+  const pz = 500 * Math.cos(el) * Math.cos(az);
+  if (keyLight.position.x !== px || keyLight.position.y !== py || keyLight.position.z !== pz) {
+    keyLight.position.set(px, py, pz);
+    markShadowDirty();
+  }
   allMats.forEach(m => m.envMapIntensity = P.env);
   shadowPlane.visible = P.shadow;
-  markShadowDirty();   // 光源方位/强度、接收面可见性都会改变阴影贴图（P0-4）
-  markRenderDirty();   // P1-2
+  markRenderDirty();   // P1-2：上面任何一项都会改变画面
 }
 
 /* ================= 背景 ================= */
@@ -1566,7 +1629,7 @@ function texControls(el, key, title) {
     return inp;
   };
   track(selectRow(el, '重复模式', [['clamp','不重复·边缘延伸'],['cutout','不重复'],['repeat','重复'],['mirror','镜像重复']],
-    () => tp().wrap, v => { tp().wrap = v; refreshTextures(); rebuild(); }), 'wrap');
+    () => tp().wrap, v => { tp().wrap = v; refreshTextures(); updateCutout(); }), 'wrap');
   track(slider(el, '缩放', 0.2, 5, 0.01, () => tp().s, v => { tp().s = v; refreshTextures(); }), 's');
   track(slider(el, '长宽比', 0.25, 4, 0.01, () => tp().asp, v => { tp().asp = v; refreshTextures(); }), 'asp');
   track(slider(el, '偏移 X', -1, 1, 0.005, () => tp().ox, v => { tp().ox = v; refreshTextures(); }), 'ox');
@@ -1640,10 +1703,10 @@ texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 
   slider(el, '边缘倒角', 0, 8, 0.1, () => P.bevel, v => { P.bevel = v; rebuild(); },
     '边缘圆角半径（mm）。会让成品外廓每边外扩 0.9 × 该值、上下各加厚该值');
   checkRow(el, '边缘随正面整体着色', () => P.edgeSame, v => { P.edgeSame = v; if (edgeColorRow) edgeColorRow.style.display = v ? 'none' : ''; rebuild(); });
-  const edgeColorRow = colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; rebuild(); });
+  const edgeColorRow = colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; updateEdgeColor(); });
   if (P.edgeSame && edgeColorRow) edgeColorRow.style.display = 'none';
   uiSyncers.push(() => { if (edgeColorRow) edgeColorRow.style.display = P.edgeSame ? 'none' : ''; });
-  slider(el, '表面粗糙', 0.05, 1, 0.01, () => P.rough, v => { P.rough = v; rebuild(); });
+  slider(el, '表面粗糙', 0.05, 1, 0.01, () => P.rough, v => { P.rough = v; updateMatRough(); });
   colorRow(el, '材质底色', () => P.matColor, v => { P.matColor = v; updateMatBase(); });
   slider(el, '本色不透明度', 0, 1, 0.01, () => P.matOpacity, v => { P.matOpacity = v; updateMatBase(); });
   slider(el, '贴图不透明度', 0, 1, 0.01, () => P.texOpacity, v => { P.texOpacity = v; updateMatBase(); });

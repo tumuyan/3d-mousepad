@@ -4,13 +4,16 @@
    断言名一律自解释，**不要**用「P0-1」「缺陷 9」这类编号：
    它们指向的是一份临时文档，删掉后编号就无处可查（历史来历请在注释里说明）。 */
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import { serve, open, reporter, EXPECTED_LOG } from './_harness.mjs';
 
 const server = await serve();
 // 统计 WebGL 绘制调用与帧数（不改页面，纯外部插桩）
+// 另计两类"看不见但很贵"的开销：离屏 FBO 绑定（阴影贴图重渲）、纹理上传（整图重传 GPU）
 const { browser, page, errors } = await open(server, {
   initScript: () => {
     window.__draws = 0; window.__counts = []; window.__frames = 0;
+    window.__fb = 0; window.__tex = 0;
     const patch = p => {
       if (!p) return;
       for (const fn of ['drawElements', 'drawArrays']) {
@@ -21,6 +24,13 @@ const { browser, page, errors } = await open(server, {
           if (typeof n === 'number') window.__counts.push(n);
           return orig.apply(this, a);
         };
+      }
+      // 第二参传 null = 回到默认帧缓冲，不算；只有绑真实 FBO 才是离屏渲染（阴影 pass）
+      const bf = p.bindFramebuffer;
+      if (bf) p.bindFramebuffer = function (t, fb) { if (fb) window.__fb++; return bf.apply(this, arguments); };
+      for (const fn of ['texImage2D', 'texSubImage2D']) {
+        const orig = p[fn]; if (!orig) continue;
+        p[fn] = function (...a) { window.__tex++; return orig.apply(this, a); };
       }
     };
     patch(window.WebGLRenderingContext && WebGLRenderingContext.prototype);
@@ -84,6 +94,125 @@ try {
   }
   ok('LOD：拖动时用低精度、松手后回到全质量', draftMax > 0 && fullMax > draftMax * 1.5,
     `draft max verts=${draftMax}, full max verts=${fullMax}`);
+
+  /* ---------- 只影响材质的参数：不得重建几何、不得白渲阴影、不得重传纹理 ---------- */
+  // 历史：这类参数曾统一走 rebuild()，白跑 ExtrudeGeometry + 腕托球体；光照组还曾无条件
+  // markShadowDirty()，让 5 个与阴影无关的控件每次输入都重渲一次 2048² 深度图；贴图变换
+  // 则每次输入都把整张图重传 GPU。三者失效时**都不报错**，只是变慢，现有断言一条也发现
+  // 不了 —— 故逐条断言「不该发生时确实没发生」，并配「画面确实变化」的正向护栏，
+  // 避免"为了把计数归零而把功能改废"的假阳性。
+  // toast 是 position:fixed; z-index:9999，会叠在 #stage 上污染截图比对 → 先隐藏。
+  await page.addStyleTag({ content: '#toast-wrap{display:none !important}' });
+
+  // 测试贴图：8px 棋盘，一半完全不透明、一半完全透明。
+  // 必须带 alpha —— 重复模式选 cutout 会 discard alpha<0.5 的片元，
+  // 不含透明的图根本看不出 uCutout 有没有更新。
+  const makePNG = (size = 64) => {
+    const T = (() => {
+      const t = new Int32Array(256);
+      for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c; }
+      return t;
+    })();
+    const crc32 = b => { let c = ~0; for (let i = 0; i < b.length; i++) c = T[(c ^ b[i]) & 0xff] ^ (c >>> 8); return ~c >>> 0; };
+    const chunk = (type, data) => {
+      const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+      const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+      const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+      return Buffer.concat([len, body, crc]);
+    };
+    const raw = Buffer.alloc((size * 4 + 1) * size);
+    for (let y = 0; y < size; y++) {
+      const o = y * (size * 4 + 1);
+      raw[o] = 0;                                     // filter: none
+      for (let x = 0; x < size; x++) {
+        const on = ((x >> 3) + (y >> 3)) % 2 === 0;
+        raw[o + 1 + x * 4] = 220; raw[o + 2 + x * 4] = 60; raw[o + 3 + x * 4] = 60;
+        raw[o + 4 + x * 4] = on ? 255 : 0;
+      }
+    }
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(size, 0); ihdr.writeUInt32BE(size, 4);
+    ihdr[8] = 8; ihdr[9] = 6;                         // 8bit RGBA
+    return Buffer.concat([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0)),
+    ]);
+  };
+  await page.setInputFiles('#file1', { name: 'alpha.png', mimeType: 'image/png', buffer: makePNG() });
+  await page.waitForTimeout(1500);
+  ok('测试贴图已载入（带 alpha 的棋盘格）',
+    await page.evaluate(() => !!document.querySelector('#dz1 img')));
+
+  // rebuild 计数：[rebuild] 走 console.log，harness 只收 error，不会污染 errors
+  let rebuildHits = 0;
+  const onRebuild = m => { if (/^\[rebuild\]/.test(m.text())) rebuildHits++; };
+  page.on('console', onRebuild);
+  await page.evaluate(() => window.setDbgRebuild(true));
+
+  const setCtl = (host, label, v, evt) => page.evaluate(({ host, label, v, evt }) => {
+    const row = [...document.querySelectorAll(host + ' .row')].find(r => r.textContent.includes(label));
+    if (!row) throw new Error('找不到控件行: ' + host + ' / ' + label);
+    const inp = row.querySelector('input,select');
+    inp.value = String(v);
+    // input 走 LOD 预览、change 收尾回到全质量；select 只认 change
+    inp.dispatchEvent(new Event(evt || 'input', { bubbles: true }));
+    if (evt !== 'change') inp.dispatchEvent(new Event('change', { bubbles: true }));
+  }, { host, label, v, evt });
+
+  // 测量一次「改控件」动作的代价：画面是否变化 + 三类开销各发生几次
+  const measure = async (host, label, v, evt) => {
+    await page.evaluate(() => { window.__fb = 0; window.__tex = 0; });
+    rebuildHits = 0;
+    const a = await page.locator('#stage').screenshot();
+    await setCtl(host, label, v, evt);
+    await page.waitForTimeout(400);
+    const b = await page.locator('#stage').screenshot();
+    const c = await page.evaluate(() => ({ fb: window.__fb, tex: window.__tex }));
+    return { changed: Buffer.compare(a, b) !== 0, rebuilds: rebuildHits, fb: c.fb, tex: c.tex };
+  };
+
+  const mRough = await measure('#shapeCtrls', '表面粗糙', 0.15);
+  ok('改「表面粗糙」后画面变化', mRough.changed);
+  ok('改「表面粗糙」不重建几何（走材质更新而非 rebuild）', mRough.rebuilds === 0,
+    `rebuild ${mRough.rebuilds} 次`);
+
+  // 边缘颜色只在「边缘随正面整体着色」关闭时才有独立材质可改；关它本身会重建，属预期
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll('#shapeCtrls .row')]
+      .find(r => r.textContent.includes('边缘随正面整体着色'));
+    const cb = row.querySelector('input[type=checkbox]');
+    if (cb.checked) cb.click();
+  });
+  await page.waitForTimeout(800);
+  const mEdge = await measure('#shapeCtrls', '边缘颜色', '#ff0000');
+  ok('改「边缘颜色」后画面变化', mEdge.changed);
+  ok('改「边缘颜色」不重建几何（走材质更新而非 rebuild）', mEdge.rebuilds === 0,
+    `rebuild ${mEdge.rebuilds} 次`);
+
+  const mHemi = await measure('#lightCtrls', '环境光', 1.6);
+  ok('改「环境光」后画面变化', mHemi.changed);
+  ok('改「环境光」不重渲阴影贴图（与阴影无关的控件不该置脏）', mHemi.fb === 0,
+    `离屏 FBO 绑定 ${mHemi.fb} 次`);
+
+  // 对照组：主光方位确实改变深度图，必须重渲。没有它，上一条"0 次"可能只是插桩没生效
+  const mAz = await measure('#lightCtrls', '主光方位', 120);
+  ok('改「主光方位」会重渲阴影贴图（对照组，防止上一条是假阳性）', mAz.fb > 0,
+    `离屏 FBO 绑定 ${mAz.fb} 次`);
+
+  const mScale = await measure('#tex1Ctrls', '缩放', 2.5);
+  ok('拖「贴图缩放」后画面变化', mScale.changed);
+  ok('拖「贴图缩放」不重传纹理（只改 texture.matrix，不需要 needsUpdate）', mScale.tex === 0,
+    `纹理上传 ${mScale.tex} 次`);
+
+  // 重复模式：uCutout 只在编译期求值一次，旧实现靠 rebuild() 刷它。
+  // 默认 cutout（GL 上与 clamp 同为 ClampToEdgeWrapping）→ 切到 clamp 不该有任何重传。
+  const mWrap = await measure('#tex1Ctrls', '重复模式', 'clamp', 'change');
+  ok('切「重复模式」后画面变化（uCutout 确实更新，未静默失效）', mWrap.changed);
+  ok('切「重复模式」不重建几何且纹理无需重传', mWrap.rebuilds === 0 && mWrap.tex === 0,
+    `rebuild ${mWrap.rebuilds} 次，纹理上传 ${mWrap.tex} 次`);
+
+  page.off('console', onRebuild);
+  await page.evaluate(() => window.setDbgRebuild(false));
 
   /* ---------- 编辑态相机必须锁定 ---------- */
   // 历史：编辑态曾写 `controls.enabled = false` 后紧跟 `setDragMode('view')`，

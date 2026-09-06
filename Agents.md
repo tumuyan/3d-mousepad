@@ -58,8 +58,12 @@
 
 **渲染与性能**
 - `markRenderDirty()`：主循环**按需渲染**（静止时完全不重绘）。⚠️ 任何改变画面的新入口都必须调用它，漏掉 = 画面不更新。兜底是「连续 30 帧无渲染则无条件渲染一次」的安全阀，漏置脏表现为「最多延迟半秒」而非永久卡死
-- `markShadowDirty()`：阴影贴图按需更新（`shadowMap.autoUpdate = false`）。只与**几何**（`rebuild()`）和**光源**（`updateLights()`）有关。⚠️ 不能改用「把 `keyLight.castShadow` 绑到 `P.shadow`」——那会连带删掉腕托投在垫身上的阴影
+- `markShadowDirty()`：阴影贴图按需更新（`shadowMap.autoUpdate = false`）。只与**几何**（`rebuild()`）和**光源方位**（`updateLights()` 里 `keyLight.position` 变化时）有关。光源强度/颜色、环境光、环境反射、接收面可见性都**不**影响深度图，改这些不要置脏。⚠️ 不能改用「把 `keyLight.castShadow` 绑到 `P.shadow`」——那会连带删掉腕托投在垫身上的阴影
 - `enterLOD()` / `commitLOD()` / `ensureFullQuality()`：交互中用低精度几何（`curveSegments 24`、球 `32×24`、`bevelSegments 1`），松手后全质量重建。⚠️ 导出与配置保存前必须 `ensureFullQuality()`，否则成品是低精度版本
+- `wristRough()`：腕托粗糙度（`min(1, P.rough + 0.1)`）的**唯一定义**。`buildWrist()` 与 `updateMatRough()` 必须都调它 —— 写死两份的话，调公式极易只改一处，表现为「拖滑条一个值、重建后跳到另一个值」，不报错
+- 粗糙度分布：顶面 = `P.rough`，腕托 = `wristRough()`，**边缘固定 `EDGE_ROUGH`（0.85）、不随 `P.rough` 变化**。`updateMatRough()` 刻意不带 `edgeMat`：非 `edgeSame` 时边缘恒 0.85，是 `edgeSame` 时它本就是 `padTopMat`。已实测确认（GLB 材质读数 + 与 rebuild 路径截图逐字节相同）
+- `updateMatBase()` / `updateMatRough()` / `updateEdgeColor()` / `updateCutout()`：**纯材质更新路径**，只写 uniform / color，不碰几何、不重建。分别服务：本色与不透明度、表面粗糙、边缘颜色、重复模式（`uCutout`）。四者都只 `markRenderDirty()`，不 `markShadowDirty()`
+- `uCutout`：由 `patchMapBlend` 的 `onBeforeCompile` 在**编译期求值一次**，故切换重复模式不能只改 `P.t1.wrap` 就完事，必须再调 `updateCutout()` 直写 uniform（旧实现靠 `rebuild()` 重建材质来刷它，代价是全量几何重建）
 
 **编辑模式**
 - `setEditOrtho()`：按 shape 真实 bbox 计算正交视锥，中心对齐几何中心。改后须由 `rebuild()` / `resize()` 触发重算
@@ -102,6 +106,8 @@
   - ⚠️ 清空贴图必须在 `cfg.type` 校验**之后**：否则误选一个普通 JSON 会先清空再报"格式不正确"，把用户已有贴图白白删掉
   - ⚠️ 清空必须**同步**发生在 ZIP 贴图异步回调之前，否则会把刚导入的贴图删掉（竞态）
   - ⚠️ 贴图解码是异步的，成败只能在 `makeTex` 回调里统计；不要在同步流程末尾判断失败数（回调还没跑，恒为 0）
+- `applyTexParams()` 只在 `wrap` 变化时置 `t.needsUpdate`：`wrapS/wrapT` 是**采样器参数**，必须随纹理重传才生效；而 `center/repeat/offset/rotation` 只进 `texture.matrix`，每帧由 `refreshTransformUniform` 作 uniform 重算，**不需要**重传。把 `needsUpdate` 无条件加回去，会让拖贴图滑条 / 画布拖拽 / 滚轮缩放时每次输入都重传整张图（4096² RGBA 约 64MB/次）
+- 只影响材质、不影响几何的参数**不要 `rebuild()`**：本色与不透明度走 `updateMatBase()`，表面粗糙度走 `updateMatRough()`，边缘颜色走 `updateEdgeColor()`。改这类参数时 `rebuild()` 会白跑 `ExtrudeGeometry` + 腕托球体，还连带 `markShadowDirty()` 重渲深度图
 - `makeTex(url, cb, onFail)`：第三参不可省。`FileReader.readAsDataURL` 对任何文件都成功，真实失败发生在 `<img>` 解码阶段，不走 `onerror`
 - `texControls(el, key, title)` 只存参数名、内部经 `P[key]` 动态取值：**不要在闭包里捕获 `P.t1` / `P.t2` 对象**。导入配置会整体换掉这两个对象，捕获旧引用的控件会写进游离对象（拖动有反应、UI 读数也对，但画面永远不变且不报错）
 - `makeTex(url, cb)` 第二参是加载回调；`setDZPreview(dz, ...)` 第一参必须是 DOM 元素
