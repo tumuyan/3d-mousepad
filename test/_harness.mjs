@@ -25,9 +25,14 @@ const MIME = {
 export async function serve() {
   const server = http.createServer((req, res) => {
     const rel = decodeURIComponent(req.url.split('?')[0]);
-    const file = path.join(ROOT, rel === '/' ? 'index.html' : rel);
-    // 目录穿越防护：解析后必须仍在 ROOT 内
-    if (!file.startsWith(ROOT)) { res.writeHead(403); res.end('forbidden'); return; }
+    const file = path.resolve(ROOT, '.' + (rel === '/' ? '/index.html' : rel));
+    // 目录穿越防护：解析后必须仍在 ROOT 内。
+    // ⚠️ 不能只判 startsWith(ROOT) —— 那会把 /workspace-evil 也当成 /workspace 的子路径放行。
+    // 用 path.relative 反推：以 .. 开头（跑到上级）或是绝对路径，都在 ROOT 之外。
+    const outside = path.relative(ROOT, file);
+    if (outside.startsWith('..') || path.isAbsolute(outside)) {
+      res.writeHead(403); res.end('forbidden'); return;
+    }
     fs.readFile(file, (err, data) => {
       if (err) { res.writeHead(404); res.end('not found'); return; }
       res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
@@ -60,10 +65,18 @@ export async function open(server, { initScript } = {}) {
   return { browser, page, errors };
 }
 
+/* 用法约定（顺序不可颠倒）：
+     let crashed = null;
+     try   { ...await body... }
+     catch (e) { crashed = e; }        // ① 只记录，不重抛
+     finally { 清理浏览器与服务 }        // ② 资源先收干净
+     process.exit(finish(crashed));    // ③ 最后打印汇总并据 crashed 决定退出码
+   若把 finish 放进 try，或让异常直接抛出，汇总清单就永远打印不出来 ——
+   崩溃时只剩一句堆栈，无法看出"崩之前跑到哪一条"。                        */
 export function reporter(title) {
   const results = [];
   const ok = (n, pass, detail = '') => results.push({ n, pass: !!pass, detail });
-  const finish = () => {
+  const finish = (crashed) => {
     console.log(`\n============ ${title} ============`);
     let fail = 0;
     for (const r of results) {
@@ -71,7 +84,11 @@ export function reporter(title) {
       console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.n}${r.detail ? '\n        ' + r.detail : ''}`);
     }
     console.log(`\n${results.length - fail}/${results.length} 通过`);
-    return fail;
+    if (crashed) {
+      console.error(`\n!! 测试异常中断（汇总为中断前已完成的断言）：`, crashed);
+      return 1;
+    }
+    return fail ? 1 : 0;
   };
   return { ok, finish };
 }

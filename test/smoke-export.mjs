@@ -3,12 +3,14 @@
 
    断言名一律自解释，**不要**用「P0-3」「P1-1」这类编号：
    它们指向的是一份临时文档，删掉后编号就无处可查（历史来历请在注释里说明）。 */
+import { statSync } from 'node:fs';
 import { serve, open, reporter, EXPECTED_LOG } from './_harness.mjs';
 
 const server = await serve();
 const { browser, page, errors } = await open(server);
 const { ok, finish } = reporter('导出与资源');
 
+let crashed = null;
 try {
   // #toast-wrap 是 position:fixed; bottom:28px; z-index:9999，**叠在 #stage 上面**，
   // 元素截图会把它一起拍进去。错误类 toast 要 5s 才消失，会污染所有画面比对。
@@ -113,7 +115,7 @@ try {
     let size = 0;
     if (d) {
       const p = await d.path();
-      if (p) size = (await import('node:fs')).statSync(p).size;
+      if (p) size = statSync(p).size;
     }
     ok(`模型导出 ${name} 成功且非空`, clicked && !!d && size > 1000,
       d ? `${d.suggestedFilename()} ${size}B` : 'no download');
@@ -136,8 +138,10 @@ try {
 
   const final = errors.filter(e => !EXPECTED_LOG.test(e));
   ok('无意外未捕获错误', final.length === 0, final.slice(0, 4).join(' | '));
+} catch (e) {
+  crashed = e;   // 只记录不重抛：finally 收尾后仍要打印已完成的断言清单
 } finally {
   await browser.close();
   await server.stop();
 }
-process.exit(finish() ? 1 : 0);
+process.exit(finish(crashed));

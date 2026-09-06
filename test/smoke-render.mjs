@@ -31,6 +31,7 @@ const { browser, page, errors } = await open(server, {
 });
 const { ok, finish } = reporter('渲染与交互');
 
+let crashed = null;
 try {
   ok('页面加载无 pageerror / console.error', errors.length === 0, errors.slice(0, 5).join(' | '));
 
@@ -228,8 +229,10 @@ try {
   const finalErrors = errors.filter(e => !EXPECTED_LOG.test(e));
   ok('全流程无意外未捕获错误（pageerror 与非预期 console.error）', finalErrors.length === 0,
     finalErrors.slice(0, 5).join(' | '));
+} catch (e) {
+  crashed = e;   // 只记录不重抛：finally 收尾后仍要打印已完成的断言清单
 } finally {
   await browser.close();
   await server.stop();
 }
-process.exit(finish() ? 1 : 0);
+process.exit(finish(crashed));
