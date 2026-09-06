@@ -371,6 +371,153 @@ const P = {
   bg: '#e9e7ec', transparent: false, exportTransparent: false, exportScale: 2,
 };
 
+/* ================= 配置导入校验（缺陷 6） =================
+   原实现是 `Object.assign(P, cfg.params)`：既会把任意未知键写进 P（可注入状态），
+   也会让 NaN / Infinity / 越界值直接进入几何，而这类错误不会抛异常，只会画出畸形模型
+   或直接让 ExtrudeGeometry 崩掉。故改为白名单 + 类型/范围校验：
+     · 白名单外的键 —— 丢弃（并记录 warning）
+     · 类型不符 / 越界 —— 回退该字段的默认值（并记录 warning）
+     · classicCtrl —— 单独做结构校验，不合法则整体回退 DEFAULT_CLASSIC_CTRL
+   ⚠️ 新增参数必须同时登记到 PARAM_SCHEMA，否则导入时会被静默丢弃（下方有 dev 自检）。   */
+const P_DEFAULTS = structuredClone(P);
+const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const TEX2D_SCHEMA = {
+  s:    { t: 'num', min: 0.05, max: 20 },
+  ox:   { t: 'num', min: -1, max: 1 },
+  oy:   { t: 'num', min: -1, max: 1 },
+  r:    { t: 'num', min: -360, max: 360 },
+  wrap: { t: 'enum', vals: ['clamp', 'cutout', 'repeat', 'mirror'] },
+  asp:  { t: 'num', min: 0.1, max: 10 },
+};
+// 数值范围比滑条区间略宽：滑条限制的是"合理设计空间"，这里只需挡住会让几何崩坏的值，
+// 以免旧配置或手改配置被无谓地截断。
+const PARAM_SCHEMA = {
+  shape:       { t: 'enum', vals: ['classic', 'rect', 'ellipse', 'stadium'] },
+  cfgName:     { t: 'str', max: 120 },
+  padW:        { t: 'num', min: 80, max: 600 },
+  padH:        { t: 'num', min: 80, max: 600 },
+  corner:      { t: 'num', min: 0, max: 150 },
+  thick:       { t: 'num', min: 0, max: 30 },
+  bevel:       { t: 'num', min: 0, max: 20 },
+  edgeColor:   { t: 'color' },
+  edgeSame:    { t: 'bool' },
+  wristStyle:  { t: 'enum', vals: ['none', 'full', 'balls'] },
+  wH:          { t: 'num', min: 0, max: 120 },
+  wW:          { t: 'num', min: 10, max: 500 },
+  wD:          { t: 'num', min: 5, max: 400 },
+  wPos:        { t: 'num', min: 0, max: 300 },
+  wGap:        { t: 'num', min: 0, max: 400 },
+  wBW:         { t: 'num', min: 10, max: 300 },
+  wMorph:      { t: 'num', min: 0, max: 3 },
+  wMorphRot:   { t: 'num', min: -360, max: 360 },
+  wRot:        { t: 'num', min: -90, max: 90 },
+  wEgg:        { t: 'num', min: -1, max: 1 },
+  wJoin:       { t: 'num', min: 0, max: 100 },
+  wMargin:     { t: 'num', min: 0, max: 40 },
+  wristTopGap: { t: 'num', min: 20, max: 500 },
+  rough:       { t: 'num', min: 0, max: 1 },
+  matColor:    { t: 'color' },
+  matOpacity:  { t: 'num', min: 0, max: 1 },
+  texOpacity:  { t: 'num', min: 0, max: 1 },
+  t1:          { t: 'tex2d' },
+  t2:          { t: 'tex2d' },
+  classicCtrl: { t: 'ctrl' },
+  hemi:        { t: 'num', min: 0, max: 5 },
+  key:         { t: 'num', min: 0, max: 10 },
+  az:          { t: 'num', min: -360, max: 360 },
+  el:          { t: 'num', min: 0, max: 90 },
+  lightColor:  { t: 'color' },
+  env:         { t: 'num', min: 0, max: 5 },
+  shadow:      { t: 'bool' },
+  bg:          { t: 'color' },
+  transparent: { t: 'bool' },
+  exportTransparent: { t: 'bool' },
+  exportScale: { t: 'num', min: 1, max: 3, int: true },
+};
+// dev 自检：新增参数忘记登记 schema 时，导入会把它静默丢弃 —— 启动时在控制台提醒
+{
+  const missing = Object.keys(P_DEFAULTS).filter(k => !(k in PARAM_SCHEMA));
+  if (missing.length) console.warn('[配置校验] 以下参数未登记 PARAM_SCHEMA，导入时会被丢弃：', missing);
+}
+
+function numOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+function sanitizeNum(v, s) {
+  const n = numOrNull(v);
+  if (n === null) return undefined;
+  return THREE.MathUtils.clamp(s.int ? Math.round(n) : n, s.min, s.max);
+}
+function sanitizeTex2d(raw) {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out = {};
+  for (const [k, s] of Object.entries(TEX2D_SCHEMA)) {
+    const d = P_DEFAULTS.t1[k];
+    const v = (k in raw) ? sanitizeField(raw[k], s) : undefined;
+    out[k] = v === undefined ? d : v;
+  }
+  return out;
+}
+// classicCtrl 单独校验：它决定上半轮廓，坏数据会直接让 makeClassicShape 崩掉。
+// 返回 undefined = 非法（调用方回退默认）；返回 null = 合法且表示"尚未烘焙"。
+function sanitizeClassicCtrl(raw) {
+  if (raw === null || raw === undefined) return null;   // 未烘焙：由 makeClassicShape 自动生成
+  if (!Array.isArray(raw) || raw.length < 4) return undefined;   // 少于 4 点无法构成闭合轮廓
+  const pts = [];
+  for (const pt of raw) {
+    if (!pt || typeof pt !== 'object') return undefined;
+    // 兼容旧版 { p:{x,y}, h1, h2 } 嵌套结构（运行时约定为顶层 {x,y,h1,h2}）
+    const x = numOrNull(pt.x !== undefined ? pt.x : (pt.p && pt.p.x));
+    const y = numOrNull(pt.y !== undefined ? pt.y : (pt.p && pt.p.y));
+    if (x === null || y === null) return undefined;
+    // 坐标夹到 ±5000mm：越界值不会崩，但会让 fitEditOrtho 把视口拉到荒谬的尺度
+    const cx = THREE.MathUtils.clamp(x, -5000, 5000);
+    const cy = THREE.MathUtils.clamp(y, -5000, 5000);
+    const hd = h => {
+      const hx = numOrNull(h && h.x), hy = numOrNull(h && h.y);
+      return (hx === null || hy === null) ? { x: cx, y: cy } : { x: hx, y: hy };
+    };
+    const o = { x: cx, y: cy, h1: hd(pt.h1), h2: hd(pt.h2) };
+    if (pt.pin) o.pin = true;
+    pts.push(o);
+  }
+  return pts;
+}
+function sanitizeField(raw, s) {
+  switch (s.t) {
+    case 'num':   return sanitizeNum(raw, s);
+    case 'enum':  return s.vals.includes(raw) ? raw : undefined;
+    case 'bool':  return typeof raw === 'boolean' ? raw : undefined;
+    case 'color': return (typeof raw === 'string' && COLOR_RE.test(raw)) ? raw : undefined;
+    case 'str':   return typeof raw === 'string' ? raw.slice(0, s.max) : undefined;
+    case 'tex2d': return sanitizeTex2d(raw);
+    case 'ctrl':  return sanitizeClassicCtrl(raw);
+    default:      return undefined;
+  }
+}
+// 返回 { params, warnings }。params 只含白名单内的键，每个非法字段都以默认值顶替并记 warning。
+// ⚠️ 语义是「配置 = 完整快照」而非「合并」：配置里没写的键会被重置为默认值，
+// 与旧的 Object.assign 不同。本工具导出的配置含全部字段，故只影响手写 / 外部生成的配置。
+function sanitizeParams(raw) {
+  const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+  const params = {}, warnings = [];
+  for (const [key, s] of Object.entries(PARAM_SCHEMA)) {
+    const has = key in src && src[key] !== undefined;
+    const v = has ? sanitizeField(src[key], s) : undefined;
+    if (v === undefined) {
+      if (has) warnings.push(key);
+      params[key] = structuredClone(P_DEFAULTS[key]);
+    } else {
+      params[key] = v;
+    }
+  }
+  const unknown = Object.keys(src).filter(k => !(k in PARAM_SCHEMA));
+  if (unknown.length) warnings.push(`未知字段 ${unknown.slice(0, 5).join('、')}${unknown.length > 5 ? ' 等' : ''}`);
+  return { params, warnings };
+}
+
 /* ================= 渲染基础 ================= */
 const canvas = document.getElementById('view');
 const stage  = document.getElementById('stage');
@@ -379,7 +526,31 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// 阴影贴图改为**按需更新**（P0-4）：three.js 的 WebGLShadowMap.render() 不检查"是否存在
+// 可见接收者"，只要 enabled 且有 castShadow 光源就每帧重渲 2048² 深度图。而 P.shadow 只控制
+// 接收面 shadowPlane 的可见性，默认 false 时这笔开销完全看不见。
+// ⚠️ 不能改用「把 keyLight.castShadow 绑到 P.shadow」：P.shadow=false 时腕托投在 padMesh 上的
+// 阴影仍然可见（padMesh.receiveShadow=true、腕托 castShadow=true），关掉会改变默认外观。
+// 方向光阴影相机与视图相机解耦，故只要几何与光源不变，贴图即可复用。
+// 任何改变几何或光源的入口都必须调 markShadowDirty()（见 rebuild / updateLights）。
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
 renderer.localClippingEnabled = true;
+
+/* ---------- 渲染脏标记（P1-2 按需渲染） ---------- */
+// 主循环只在「本帧有变化」时 render()，静止时完全不重绘（省电、省 GPU）。
+// 可行性依据：OrbitControls 阻尼在静止时收敛，实测空闲 30 帧内 camera.position 与
+// controls.target 位移恒为 0，不会卡在"永不静止"；preserveDrawingBuffer 已开，
+// 未渲染的帧画布保留上一帧内容，不会黑屏。
+// ⚠️ 任何改变画面的入口都必须调 markRenderDirty()，漏掉会导致画面不更新。
+// 兜底：连续 IDLE_RENDER_MAX 帧未渲染则无条件渲染一次（安全阀），
+// 漏置脏时表现为「最多延迟半秒」而非「永久卡死」。
+let renderDirty = true;
+let idleFrames = 0;
+const IDLE_RENDER_MAX = 30;
+function markRenderDirty() { renderDirty = true; }
+// 阴影贴图只与几何、光源有关，与相机 / 画布尺寸无关，故单独置脏
+function markShadowDirty() { renderer.shadowMap.needsUpdate = true; }
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(38, 1, 1, 6000);
@@ -401,9 +572,28 @@ controls.dampingFactor = 0.08;
 controls.target.copy(HOME.tgt);
 controls.maxDistance = 1600;
 controls.minDistance = 60;
+// P1-2：OrbitControls 在改写相机时派发 change —— 覆盖「拖拽旋转/平移/缩放」与
+// enableDamping 的衰减尾巴（r160 的 update() 每帧解算 spherical，与上帧差异超过 EPS 就派发）。
+// 外部直接改 camera.position / controls.target 同样会在下一次 update() 里被发现，
+// 但语义上不直观，故视角切换等处仍显式置脏，不依赖这条兜底。
+controls.addEventListener('change', markRenderDirty);
 
+// 环境贴图烘焙完即可释放生成器（P0-3）：PMREMGenerator 内部持有 render target 与
+// _lodPlanes / _blurMaterial，不 dispose 会常驻显存，且污染 renderer.info.memory 基线
+// ——而本项目正是用该计数器验证纹理泄漏（缺陷 4），基线不干净会让排查失真。
+// ⚠️ 只释放生成器本体与临时 RoomEnvironment 场景；scene.environment 这张纹理
+// 仍被所有 PBR 材质引用，绝不能 dispose。
 const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+{
+  const roomScene = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(roomScene, 0.04).texture;
+  roomScene.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose());
+  });
+  roomScene.clear();
+  pmrem.dispose();
+}
 
 const hemiLight = new THREE.HemisphereLight(0xffffff, 0x777788, P.hemi);
 scene.add(hemiLight);
@@ -433,13 +623,36 @@ let tex1 = null, tex2 = null;
 const maxAniso = renderer.capabilities.getMaxAnisotropy();
 const texLoader = new THREE.TextureLoader();
 
-function makeTex(url, cb) {
-  texLoader.load(url, t => {
-    t.colorSpace = THREE.SRGBColorSpace;
-    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
-    t.anisotropy = maxAniso;
-    cb(t);
-  });
+// 单张贴图解码后的最大边长。超过则拒绝：WebGL 纹理上限通常为 4096~16384，
+// 且超大图会显著拖慢 rebuild 与导出。导出侧 GLTFExporter 另有限 maxTextureSize: 4096。
+const MAX_TEX_EDGE = 4096;
+// P0-2：onError 不可省略。FileReader.readAsDataURL 对任何文件都会成功（DataURL 一定生成），
+// 真正的失败发生在 <img> 内部的**解码**阶段，不走 FileReader.onerror。
+// 少了 onError，坏文件 / 损坏 ZIP / deflate 条目都会静默失败，用户仍看到"导入成功"。
+function makeTex(url, cb, onFail) {
+  const fail = err => {
+    console.error('[贴图加载失败]', err);
+    if (onFail) onFail(err);
+    else toast('贴图加载失败：' + ((err && err.message) || '文件可能已损坏或不是受支持的图片格式'), 'err');
+  };
+  texLoader.load(
+    url,
+    t => {
+      // 超大图会显著拖慢 rebuild 与导出，且可能直接超出 WebGL 纹理上限 → 拒绝使用
+      const w = t.image && t.image.width, h = t.image && t.image.height;
+      if (w > MAX_TEX_EDGE || h > MAX_TEX_EDGE) {
+        t.dispose();
+        fail(new Error(`图片尺寸 ${w}×${h} 超过上限 ${MAX_TEX_EDGE}×${MAX_TEX_EDGE}`));
+        return;
+      }
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+      t.anisotropy = maxAniso;
+      cb(t);
+    },
+    undefined,
+    fail
+  );
 }
 // 替换 / 清空槽位贴图：必须先 dispose 旧纹理。
 // 反复上传或反复导入配置时，旧 Texture 会一直占着显存（GPU 侧不会随 JS 引用消失自动回收）。
@@ -476,6 +689,7 @@ function refreshTextures() {
   applyTexParams(tex1, P.t1);
   applyTexParams(tex2, P.t2);
   rebuildWristMat();
+  markRenderDirty();   // P1-2：贴图变换参数变了（贴图本身不影响阴影）
 }
 
 /* ================= 几何 ================= */
@@ -988,6 +1202,7 @@ function updateMatBase() {
       m.userData.shader.uniforms.uBaseOpacity.value = P.matOpacity;
     }
   });
+  markRenderDirty();   // P1-2：材质色/透明度变了（不影响阴影）
 }
 
 function buildPad() {
@@ -997,13 +1212,14 @@ function buildPad() {
     // edgeSame 时顶/边共用同一材质实例，先去重再注销，避免重复 dispose
     [...new Set(padMesh.material)].forEach(unregMat);
   }
+  const q = lodQ();   // P1-3：交互进行中用低精度，松手后回到全质量
   const geo = new THREE.ExtrudeGeometry(makeShape(), {
     depth: P.thick,
     bevelEnabled: P.bevel > 0,   // 编辑轮廓时也保留真实倒角立体感（顶面边界仍与 shape 1:1 重合）
     bevelThickness: P.bevel,
     bevelSize: P.bevel * 0.9,
-    bevelSegments: 5,
-    curveSegments: 72,
+    bevelSegments: q.bevelSegments,
+    curveSegments: q.curveSegments,
   });
   geo.translate(0, 0, -P.thick / 2);
   geo.rotateX(-Math.PI / 2);
@@ -1069,8 +1285,9 @@ function buildWrist(topY) {
 
     const ry = P.wH * 1.5;
     const cy = topY - P.wH * 0.5;
+    const q = lodQ();   // P1-3：同上，球体分段数随 LOD 变化
     const mk = (sx, sz, x, z, rotY = 0) => {
-      const g = new THREE.SphereGeometry(1, 72, 48);
+      const g = new THREE.SphereGeometry(1, q.sphereW, q.sphereH);
       const m = new THREE.Mesh(g, wristMat);
       m.scale.set(sx, ry, sz);
       m.rotation.y = rotY;
@@ -1128,6 +1345,36 @@ const tNow = () => (dbgRebuild ? performance.now() : 0);
 const dbg = { n: 0, total: 0, max: 0, pad: 0, wrist: 0, wristN: 0, ortho: 0, orthoN: 0, padOnly: 0, winStart: -1, winN: 0 };
 const DBG_WIN = 500;   // 汇总窗口(ms)：逐条看单次耗时，汇总看"调用过密"的频率
 
+/* ---------- LOD 预览（P1-3） ----------
+   rebuild() 实测 7–11.75ms/次，而滑条 oninput 与锚点 pointermove 都是逐次同步触发，
+   拖动时单帧成本直接吃掉大半个 60fps 预算。故在**交互进行中**用低精度几何，
+   交互结束（滑条 change / 锚点 pointerup / 退出编辑）再全质量重建一次。
+   ⚠️ 导出与配置保存前必须 ensureFullQuality()，否则 GLB / STL / PNG 会拿到低精度版本。   */
+const LOD = {
+  full:  { curveSegments: 72, bevelSegments: 5, sphereW: 72, sphereH: 48 },
+  draft: { curveSegments: 24, bevelSegments: 1, sphereW: 32, sphereH: 24 },
+};
+let lodDraft = false;   // 当前是否处于低精度预览
+let lodDirty = false;   // LOD 期间是否真的以低精度重建过（决定收尾要不要补一次全质量重建）
+const lodQ = () => (lodDraft ? LOD.draft : LOD.full);
+
+// 进入低精度：只置标记，下次 rebuild 生效。滑条 oninput 与锚点拖拽调用。
+function enterLOD() { lodDraft = true; }
+// 收尾：拖动结束（滑条 change / 锚点 pointerup / 退出编辑）切回全质量。
+// 只有期间真的用过低精度才补一次 rebuild —— 否则调贴图参数这类不重建的滑条
+// 松手时也会白白多跑一次 7~11ms 的全质量重建。
+function commitLOD() {
+  if (!lodDraft) return;
+  lodDraft = false;
+  if (lodDirty) { lodDirty = false; rebuild(); }
+}
+// 导出 / 配置保存前的统一入口：确保几何是全质量（否则 GLB / STL / PNG 会拿到低精度版本）
+function ensureFullQuality() {
+  if (!lodDraft && !lodDirty) return;
+  lodDraft = false; lodDirty = false;
+  rebuild();
+}
+
 function dbgReset() {
   dbg.n = dbg.total = dbg.max = 0;
   dbg.pad = dbg.wrist = dbg.wristN = dbg.ortho = dbg.orthoN = dbg.padOnly = 0;
@@ -1176,14 +1423,17 @@ window.setDbgRebuild = v => {
 // ⚠️ 新增 padOnly 调用点前必须重新核对上述依赖，否则腕托会静默停在错误位置。
 function rebuild(padOnly) {
   const t0 = tNow();
+  if (lodDraft) lodDirty = true;   // P1-3：记下"本次是低精度"，供 commitLOD 判断是否要补重建
   const topY = buildPad();
   const t1 = tNow();
   if (padOnly) dbg.padOnly++; else buildWrist(topY);
   const t2 = tNow();
   markOverlayDirty();              // 几何变了：锚点世界坐标、顶面高度都可能跟着变
+  markShadowDirty();                // 几何变了 → 深度图作废（P0-4）
   // 注意：此处**不**重算正交视口。视口只在 fitEditOrtho() 的明确入口更新，
   // 否则拖锚点会因包围盒变化导致画面边拖边缩放（详见 cvCx/cvCy/cvHalf 处的说明）。
   const t3 = tNow();
+  markRenderDirty();                // P1-2：几何变了必须重绘
   if (dbgRebuild) dbgReport(t0, t1, t2, t3);
 }
 
@@ -1203,6 +1453,7 @@ let padBuiltFrame = -1;
 function rebuildPadCoalesced() {
   if (padBuiltFrame === curFrame) return;   // 本帧已重建，跳过（锚点仍由主循环兜底重绘）
   padBuiltFrame = curFrame;
+  enterLOD();                               // P1-3：拖拽期间用低精度，松手由 commitLOD 补回
   rebuild(true);
 }
 
@@ -1219,10 +1470,13 @@ function updateLights() {
   );
   allMats.forEach(m => m.envMapIntensity = P.env);
   shadowPlane.visible = P.shadow;
+  markShadowDirty();   // 光源方位/强度、接收面可见性都会改变阴影贴图（P0-4）
+  markRenderDirty();   // P1-2
 }
 
 /* ================= 背景 ================= */
 function updateBackground() {
+  markRenderDirty();   // P1-2：背景色/透明只影响画面，不影响阴影
   if (P.transparent) {
     scene.background = null;
     renderer.setClearColor(0x000000, 0);
@@ -1243,7 +1497,15 @@ function slider(parent, label, min, max, step, get, set, note) {
   const inp = document.createElement('input');
   inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
   const val = document.createElement('span'); val.className = 'val'; val.textContent = get();
-  inp.oninput = () => { set(parseFloat(inp.value)); val.textContent = inp.value; };
+  // P1-3：oninput 期间进入 LOD（set 回调里的 rebuild 会用低精度几何），
+  // 松手（change）时由 commitLOD() 切回全质量重建一次。
+  inp.oninput = () => { enterLOD(); set(parseFloat(inp.value)); val.textContent = inp.value; };
+  // 键盘微调兜底：Chrome 下方向键会同时派发 input 与 change，但其它浏览器
+  // 与"按住不放"等边界不保证，故再补 keyup / blur 兜一次，避免几何停在低精度。
+  // commitLOD() 内有 lodDirty 守卫，重复调用不会白跑全质量重建。
+  inp.onchange = commitLOD;
+  inp.addEventListener('keyup', commitLOD);
+  inp.addEventListener('blur', commitLOD);
   uiSyncers.push(() => { inp.value = get(); val.textContent = get(); });
   row.append(lb, inp, val); parent.appendChild(row);
   return inp;
@@ -1291,21 +1553,25 @@ function btnRow(parent, label, text, onClick) {
 
 /* --- 贴图变换控件 --- */
 const texUI = { t1: [], t2: [] }; // 记录控件以便画布拖拽后同步滑条显示
-function texControls(el, tp, title, key) {
+// ⚠️ 只收 key 名字、每次经 P[key] 动态取值，不要在闭包里捕获 P.t1 / P.t2 对象：
+// 导入配置会整体换掉这两个对象（sanitizeParams 返回全新对象），捕获旧引用的话
+// 控件会写进游离对象 —— 拖动有反应、UI 读数也对，但画面永远不变且不报任何错。
+function texControls(el, key, title) {
   const h = document.createElement('div');
   h.className = 'hint'; h.style.marginTop = '6px'; h.textContent = title;
   el.appendChild(h);
+  const tp = () => P[key];
   const track = (inp, prop) => {
     texUI[key].push({ inp, prop, val: inp.parentElement.querySelector('.val') });
     return inp;
   };
   track(selectRow(el, '重复模式', [['clamp','不重复·边缘延伸'],['cutout','不重复'],['repeat','重复'],['mirror','镜像重复']],
-    () => tp.wrap, v => { tp.wrap = v; refreshTextures(); rebuild(); }), 'wrap');
-  track(slider(el, '缩放', 0.2, 5, 0.01, () => tp.s, v => { tp.s = v; refreshTextures(); }), 's');
-  track(slider(el, '长宽比', 0.25, 4, 0.01, () => tp.asp, v => { tp.asp = v; refreshTextures(); }), 'asp');
-  track(slider(el, '偏移 X', -1, 1, 0.005, () => tp.ox, v => { tp.ox = v; refreshTextures(); }), 'ox');
-  track(slider(el, '偏移 Y', -1, 1, 0.005, () => tp.oy, v => { tp.oy = v; refreshTextures(); }), 'oy');
-  track(slider(el, '旋转°', -180, 180, 1, () => tp.r, v => { tp.r = v; refreshTextures(); }), 'r');
+    () => tp().wrap, v => { tp().wrap = v; refreshTextures(); rebuild(); }), 'wrap');
+  track(slider(el, '缩放', 0.2, 5, 0.01, () => tp().s, v => { tp().s = v; refreshTextures(); }), 's');
+  track(slider(el, '长宽比', 0.25, 4, 0.01, () => tp().asp, v => { tp().asp = v; refreshTextures(); }), 'asp');
+  track(slider(el, '偏移 X', -1, 1, 0.005, () => tp().ox, v => { tp().ox = v; refreshTextures(); }), 'ox');
+  track(slider(el, '偏移 Y', -1, 1, 0.005, () => tp().oy, v => { tp().oy = v; refreshTextures(); }), 'oy');
+  track(slider(el, '旋转°', -180, 180, 1, () => tp().r, v => { tp().r = v; refreshTextures(); }), 'r');
 }
 function syncTexUI(key) {
   const tp = P[key];
@@ -1314,8 +1580,8 @@ function syncTexUI(key) {
     if (val) val.textContent = typeof tp[prop] === 'number' ? +tp[prop].toFixed(3) : tp[prop];
   });
 }
-texControls(document.getElementById('tex1Ctrls'), P.t1, '— 主贴图变换 —', 't1');
-texControls(document.getElementById('tex2Ctrls'), P.t2, '— 腕托贴图变换 —', 't2');
+texControls(document.getElementById('tex1Ctrls'), 't1', '— 主贴图变换 —');
+texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 —');
 
 /* --- 外形 --- */
 {
@@ -1552,9 +1818,15 @@ function bindDropzone(dzId, fileId, onImg) {
     }
   };
 }
+// P0-2：读文件本身也可能失败（文件被占用、过大、权限），原实现只有 onload，
+// 失败时既无 onerror 也无提示，用户点了上传后什么都不会发生。
 function loadImage(file, onImg, dz) {
   const rd = new FileReader();
   rd.onload = () => onImg(rd.result, dz);
+  rd.onerror = () => {
+    console.error('[读取文件失败]', rd.error);
+    toast('读取文件失败：' + ((rd.error && rd.error.message) || '未知错误'), 'err');
+  };
   rd.readAsDataURL(file);
 }
 /* 轻量 toast 提示（替代 alert）：type = 'ok' | 'err' | '' */
@@ -1585,14 +1857,20 @@ bindDropzone('dz1', 'file1', (url, dz) => {
   makeTex(url, t => {
     setTex(1, t); refreshTextures(); rebuild();
     setDZPreview(dz, url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); }));
-  });
+  }, () => texLoadFailed(1));
 });
 bindDropzone('dz2', 'file2', (url, dz) => {
   makeTex(url, t => {
     setTex(2, t); refreshTextures(); rebuild();
     setDZPreview(dz, url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); }));
-  });
+  }, () => texLoadFailed(2));
 });
+// 贴图加载失败时不留下"半截状态"：槽位保持原样，预览回到占位文案（P0-2）
+function texLoadFailed(slot, err) {
+  const name = slot === 1 ? '主贴图' : '腕托贴图';
+  const why = err && err.message ? err.message : '文件可能已损坏或不是受支持的图片格式';
+  toast(`${name}加载失败，未应用：${why}`, 'err', 4000);
+}
 function resetDZ(id, html, clearFn) {
   document.getElementById(id).innerHTML = html;
   clearFn();
@@ -1603,9 +1881,15 @@ const modeSeg = document.getElementById('modeSeg');
 const modeHint = document.getElementById('modeHint');
 let dragMode = 'view';
 
-function setDragMode(m) {
+// keepControls=true 时不接管 controls.enabled（缺陷 9）。
+// 背景：编辑轮廓态曾写 `controls.enabled = false;` 紧接着 `setDragMode('view')`，
+// 后者这行又把它置回 true —— 赋值是死代码，编辑态的相机锁定实际完全依赖 curveLayer
+// 覆盖在 canvas 上拦截指针事件。一旦有人调整 curveLayer 的 pointer-events / z-index，
+// 相机就会失控（实测设为 pointer-events:none 后拖拽使相机位移 395 单位）。
+// 现由 setCurveEdit() 显式管理 enabled，此处只在需要时接管。
+function setDragMode(m, keepControls) {
   dragMode = m;
-  controls.enabled = (m === 'view');
+  if (!keepControls) controls.enabled = (m === 'view');
   canvas.style.cursor = m === 'view' ? '' : 'move';
   modeSeg.querySelectorAll('button').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === m));
@@ -1617,7 +1901,9 @@ function setDragMode(m) {
   }
 }
 modeSeg.querySelectorAll('button').forEach(b =>
-  b.onclick = () => setDragMode(b.dataset.mode));
+  // 编辑轮廓态下 keepControls=true：无论切到哪个模式，相机都保持锁定（缺陷 9）。
+  // 否则用户在编辑态点回「视角」会把 enabled 置回 true，锁定再次形同虚设。
+  b.onclick = () => setDragMode(b.dataset.mode, curveEdit));
 
 let panning = false, lastPX = 0, lastPY = 0;
 canvas.addEventListener('pointerdown', e => {
@@ -1700,14 +1986,20 @@ stage.addEventListener('drop', e => {
   const file = e.dataTransfer.files[0];
   if (!file || !file.type.startsWith('image/')) return;
   const rd = new FileReader();
+  rd.onerror = () => {   // P0-2：读取失败（文件被占用 / 过大）要提示，不能无声无息
+    console.error('[读取文件失败]', rd.error);
+    toast('读取文件失败：' + ((rd.error && rd.error.message) || '未知错误'), 'err');
+  };
   rd.onload = () => {
     const url = rd.result;
     if (!tex1) {
       makeTex(url, t => { setTex(1, t); refreshTextures(); rebuild();
-        setDZPreview(document.getElementById('dz1'), url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); })); });
+        setDZPreview(document.getElementById('dz1'), url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); })); },
+        err => texLoadFailed(1, err));
     } else {
       makeTex(url, t => { setTex(2, t); refreshTextures(); rebuild();
-        setDZPreview(document.getElementById('dz2'), url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); })); });
+        setDZPreview(document.getElementById('dz2'), url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); })); },
+        err => texLoadFailed(2, err));
     }
   };
   rd.readAsDataURL(file);
@@ -1725,6 +2017,7 @@ viewSeg.querySelectorAll('button').forEach(b => {
   b.onclick = () => {
     const [p, t] = VIEWS[b.dataset.view];
     camera.position.copy(p); controls.target.copy(t);
+    markRenderDirty();   // P1-2：直接改相机，不经 rebuild / updateLights，必须显式置脏
   };
 });
 
@@ -1791,6 +2084,7 @@ function applyEditOrtho() {
   orthoCam.updateProjectionMatrix();
   orthoCam.updateMatrixWorld(true);
   markOverlayDirty();   // 视锥变了：锚点屏幕坐标必然变（含"只平移不缩放"的情形）
+  markRenderDirty();    // P1-2：编辑态渲染用的就是 orthoCam，视锥变了必须重绘
 }
 
 // 按 makeClassicShape() 的实际包围盒重新 fit 视口：中心对齐几何中心，
@@ -1825,8 +2119,10 @@ function setCurveEdit(on) {
   // 先设置 flag 再 rebuild，使 buildPad() 根据 curveEdit 决定是否启用 bevel
   if (curveEdit) {
     prevViewPos = { pos: camera.position.clone(), tgt: controls.target.clone() };
+    // keepControls=true：不让 setDragMode 覆盖 enabled，由本函数显式锁定相机（缺陷 9）。
+    // 这样即使 curveLayer 被改为 pointer-events:none / z-index 变化，相机也不会被拖走。
+    setDragMode('view', true);
     controls.enabled = false;
-    setDragMode('view');
     modeHint.textContent = '编辑轮廓：拖圆点=移动锚点  拖方块=调切线  Shift=切线独立  双击=加点  右键=删点';
     modeHint.style.display = 'block';
     resizeCurveLayer();   // 先缓存画布尺寸，fitEditOrtho() 要用它算 aspect
@@ -1847,6 +2143,8 @@ function setCurveEdit(on) {
     if (cb.parentElement.textContent.includes('编辑轮廓')) cb.checked = curveEdit;
   });
   // 进入/退出编辑时重建网格：进入时关 bevel 让覆盖层与网格严格对齐；退出时恢复 bevel
+  // P1-3：先收尾可能残留的低精度状态（拖锚点途中直接退出编辑），否则几何会停在 LOD 版本
+  commitLOD();
   rebuild();
 }
 
@@ -2017,9 +2315,11 @@ curveLayer.addEventListener('pointermove', e => {
   rebuildPadCoalesced();
 });
 
-const endCurveDrag = () => { cvDrag = null; };
+// P1-3：松手时切回全质量重建（拖动期间用的是低精度几何）
+const endCurveDrag = () => { if (cvDrag) { cvDrag = null; commitLOD(); } };
 curveLayer.addEventListener('pointerup', endCurveDrag);
 curveLayer.addEventListener('pointercancel', endCurveDrag);
+curveLayer.addEventListener('pointerleave', endCurveDrag);
 
 // 双击加点：插到最近的曲线段中点
 curveLayer.addEventListener('dblclick', e => {
@@ -2057,30 +2357,45 @@ function activeCam() { return (curveEdit && orthoCam) ? orthoCam : camera; }
 
 function exportPNG(opts) {
   const download = !opts || opts.download !== false;
+  ensureFullQuality();   // P1-3：导出必须是全质量几何，不能把 LOD 预览的低精度版本写进图片
   const scale = P.exportScale;
   const w = stage.clientWidth, h = stage.clientHeight;
   const useCam = activeCam();
   // 导出时临时套用导出透明设置，不改变预览状态
   const prevTransparent = P.transparent;
-  if (P.exportTransparent !== P.transparent) {
-    P.transparent = P.exportTransparent;
-    updateBackground();
-  }
   // 必须先置 pixelRatio=1：renderer.setSize 内部会再乘一次 pixelRatio，
   // 否则高分屏（dpr=2）上 2x 导出实际得到 4x、3x 得到 6x，极易超出浏览器画布上限。
   const prevPixelRatio = renderer.getPixelRatio();
-  renderer.setPixelRatio(1);
-  renderer.setSize(w * scale, h * scale, false);
-  renderer.render(scene, useCam);
-  const url = renderer.domElement.toDataURL('image/png');
-  // 恢复预览状态
-  if (P.exportTransparent !== prevTransparent) {
-    P.transparent = prevTransparent;
-    updateBackground();
+  // ⚠️ P0-1：下面这段会临时把渲染器改成"导出态"（放大画布 + pixelRatio=1）。
+  // 一旦中途抛错（toDataURL 超画布上限、WebGL 上下文丢失、render 失败），
+  // 若不恢复，预览会永久停留在大尺寸/低像素比状态且刷新前无法挽回。
+  // 故所有状态改动必须配 try/finally，并且失败要 toast 告知用户（不能静默）。
+  // 注意：状态改动要放进 try —— 写在 try 之前的异常不会触发 finally。
+  let url = null;
+  try {
+    if (P.exportTransparent !== P.transparent) {
+      P.transparent = P.exportTransparent;
+      updateBackground();
+    }
+    renderer.setPixelRatio(1);
+    renderer.setSize(w * scale, h * scale, false);
+    renderer.render(scene, useCam);
+    url = renderer.domElement.toDataURL('image/png');
+  } catch (err) {
+    console.error('[导出预览图]', err);
+    toast('预览图导出失败：' + ((err && err.message) || err), 'err');
+    return null;
+  } finally {
+    // 恢复预览状态
+    if (P.exportTransparent !== prevTransparent) {
+      P.transparent = prevTransparent;
+      updateBackground();
+    }
+    // 恢复顺序：先按 CSS 尺寸 setSize（此时 pixelRatio 仍为 1，不产生超大中间画布），再恢复 pixelRatio
+    renderer.setSize(w, h, false);
+    renderer.setPixelRatio(prevPixelRatio);
+    markRenderDirty();   // 画布被改过尺寸，下一帧必须重绘
   }
-  // 恢复顺序：先按 CSS 尺寸 setSize（此时 pixelRatio 仍为 1，不产生超大中间画布），再恢复 pixelRatio
-  renderer.setSize(w, h, false);
-  renderer.setPixelRatio(prevPixelRatio);
   if (download) {
     const a = document.createElement('a');
     a.href = url; a.download = 'mousepad-3d-preview.png'; a.click();
@@ -2166,6 +2481,8 @@ function cropTransparentPNG(src) {
    据此算出的视距与宽高比与实际画面无关，会同时出现"模型被裁切"和"大片透明留白"。 */
 function exportModelPNG(opts) {
   const download = !opts || opts.download !== false;
+  // P1-3：取景（modelNDCRect 逐顶点投影）与出图都依赖几何，必须是全质量
+  ensureFullQuality();
   const scale = P.exportScale;
   const cam = activeCam();
   const objs = modelParts();
@@ -2201,26 +2518,38 @@ function exportModelPNG(opts) {
   // 与 exportPNG 同理：导出期间置 pixelRatio=1，避免倍率被 dpr 二次放大
   const prevPixelRatio = renderer.getPixelRatio();
 
-  // 强制透明背景（不改变 P.transparent，导出后恢复）
-  P.transparent = true; updateBackground();
-  shadowPlane.visible = false;
-  renderer.setPixelRatio(1);
-  renderer.setSize(outW, outH, false);
-  // 视窗宽高用 outW/k、outH/k（而非 rw/rh），与取整后的画布严格同比，避免亚像素拉伸
-  cam.setViewOffset(fullW, fullH, x0, y0, outW / k, outH / k);
-  cam.updateProjectionMatrix();
+  // ⚠️ P0-1：这段会临时改写 5 处状态（透明背景 / 阴影面 / pixelRatio / 画布尺寸 /
+  // 相机 viewOffset + aspect）。任一处未恢复都会让预览永久走形（画面被裁切或放大），
+  // 且刷新前无法挽回。故整段包 try/finally，失败要 toast 告知用户。
+  // 注意：状态改动必须放在 try 内 —— 写在 try 之前的异常不会触发 finally。
+  let url = null;
+  try {
+    // 强制透明背景（不改变 P.transparent，导出后恢复）
+    P.transparent = true; updateBackground();
+    shadowPlane.visible = false;
+    renderer.setPixelRatio(1);
+    renderer.setSize(outW, outH, false);
+    // 视窗宽高用 outW/k、outH/k（而非 rw/rh），与取整后的画布严格同比，避免亚像素拉伸
+    cam.setViewOffset(fullW, fullH, x0, y0, outW / k, outH / k);
+    cam.updateProjectionMatrix();
 
-  renderer.render(scene, cam);
-  const url = cropTransparentPNG(renderer.domElement);
-
-  // 恢复预览状态
-  cam.clearViewOffset();
-  if (prevAspect !== null) cam.aspect = prevAspect;
-  cam.updateProjectionMatrix();
-  P.transparent = prevTransparent; updateBackground();
-  shadowPlane.visible = prevShadow;
-  renderer.setSize(fullW, fullH, false);
-  renderer.setPixelRatio(prevPixelRatio);
+    renderer.render(scene, cam);
+    url = cropTransparentPNG(renderer.domElement);
+  } catch (err) {
+    console.error('[导出模型渲染图]', err);
+    toast('模型渲染图导出失败：' + ((err && err.message) || err), 'err');
+    return null;
+  } finally {
+    // 恢复预览状态（顺序与 exportPNG 一致：先恢复相机与场景，再恢复画布尺寸）
+    cam.clearViewOffset();
+    if (prevAspect !== null) cam.aspect = prevAspect;
+    cam.updateProjectionMatrix();
+    P.transparent = prevTransparent; updateBackground();
+    shadowPlane.visible = prevShadow;
+    renderer.setSize(fullW, fullH, false);
+    renderer.setPixelRatio(prevPixelRatio);
+    markRenderDirty();   // 画布尺寸被改过，下一帧必须重绘
+  }
 
   if (download) {
     const a = document.createElement('a');
@@ -2373,6 +2702,7 @@ function disposeExportRoot(root) {
 let exportBusy = false;
 async function exportModel3D(kind) {
   if (exportBusy) return;                       // GLB 编码是异步的，防止连点导出多份
+  ensureFullQuality();   // P1-3：导出的网格必须是全质量，LOD 版本会直接改变成品外形
   if (!modelParts().length) { toast('模型尚未构建，无法导出', 'err'); return; }
   exportBusy = true;
   const base = safeFileName(P.cfgName, 'mousepad-3d');
@@ -2478,6 +2808,9 @@ function parseZip(bytes) {
   let p = cdOffset;
   const count = dv.getUint16(eocd + 10, true);
   for (let i = 0; i < count; i++) {
+    // 目录项头部定长 46 字节：先判越界再读。否则 p 越界会抛 RangeError，
+    // 被上层 catch 后统一报成"不是有效的 ZIP 文件"，掩盖真实的目录损坏。
+    if (p < 0 || p + 46 > bytes.length) throw new Error('ZIP 目录已损坏');
     if (dv.getUint32(p, true) !== 0x02014b50) break;
     const method = dv.getUint16(p + 10, true);
     const crc = dv.getUint32(p + 16, true);
@@ -2488,10 +2821,18 @@ function parseZip(bytes) {
     const localOffset = dv.getUint32(p + 42, true);
     const nameBytes = bytes.subarray(p + 46, p + 46 + nameLen);
     const name = new TextDecoder().decode(nameBytes);
+    // P0-2：打包端只用 store（method 0），故 deflate(8) 等压缩条目一律拒绝。
+    // 旧实现把它们当作原始字节直接吐出，上层会据此拼出"看起来合法"的 dataURL，
+    // 解码在 <img> 内部失败且无 onError → 静默无贴图，却提示"配置已导入"。
+    if (method !== 0) throw new Error(`ZIP 条目 "${name}" 使用了不支持的压缩方式（method=${method}）`);
+    // 越界保护：localOffset / compSize 来自文件，可能把读指针指到缓冲区之外
+    if (localOffset + 30 > bytes.length || localOffset < 0) throw new Error(`ZIP 条目 "${name}" 的偏移越界`);
     const ldv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const dataOff = localOffset + 30 + ldv.getUint16(localOffset + 26, true) + ldv.getUint16(localOffset + 28, true);
+    if (dataOff + compSize > bytes.length) throw new Error(`ZIP 条目 "${name}" 的数据越界`);
     const data = bytes.subarray(dataOff, dataOff + compSize);
-    if (method === 0 && crc32(data) !== crc) console.warn('ZIP 条目 CRC 校验失败:', name);
+    // CRC 失败必须抛错而不是 console.warn：损坏的数据继续走下去同样只会静默失败
+    if (crc32(data) !== crc) throw new Error(`ZIP 条目 "${name}" 校验失败（文件已损坏）`);
     files.set(name, data);
     p += 46 + nameLen + extraLen + commentLen;
   }
@@ -2546,42 +2887,99 @@ function exportConfigZip() {
   const blob = makeZip(files);
   downloadBlob(blob, safeFileName(P.cfgName, 'mousepad-config') + '.zip');
 }
+// 配置文件大小上限。base64 贴图内嵌时体积会膨胀约 1/3，32MB 足以容纳若干张大图，
+// 同时挡住"误选了视频/磁盘镜像"这类会让页面卡死或 OOM 的输入。
+const MAX_CONFIG_BYTES = 32 * 1024 * 1024;
+const CONFIG_VERSION = 1;
+
+// 清空一个贴图槽位并让预览区回到占位文案（P1-1：导入即完全对齐配置文件内容）
+function resetTexSlot(slot) {
+  clearTex(slot);
+  if (slot === 1) resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => {});
+  else resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => {});
+}
+
 async function importConfigFile(file) {
-  const buf = new Uint8Array(await file.arrayBuffer());
-  let cfg;
-  if (file.name.toLowerCase().endsWith('.zip')) {
-    const files = parseZip(buf);
-    const json = files.get('config.json');
-    if (!json) throw new Error('ZIP 中缺少 config.json');
-    cfg = JSON.parse(new TextDecoder().decode(json));
-    for (const [name, data] of files) {
+  if (!file) return;
+  if (file.size > MAX_CONFIG_BYTES) {
+    toast(`配置文件过大（${(file.size / 1048576).toFixed(1)}MB），上限 32MB`, 'err', 4000);
+    return;
+  }
+  let cfg, zipFiles = null;
+  // 这一段只做"读 + 解析"，**不碰任何页面状态**。
+  // ⚠️ 清空贴图绝不能放在这里：误选一个普通 JSON（或 type 不对的文件）会解析成功但校验失败，
+  // 若先清空再校验，用户当前的贴图与设计就被白白删掉了。
+  try {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    if (file.name.toLowerCase().endsWith('.zip')) {
+      zipFiles = parseZip(buf);
+      const json = zipFiles.get('config.json');
+      if (!json) throw new Error('ZIP 中缺少 config.json');
+      cfg = JSON.parse(new TextDecoder().decode(json));
+    } else {
+      cfg = JSON.parse(new TextDecoder().decode(buf));
+    }
+  } catch (err) {
+    console.error('[导入配置]', err);
+    toast('配置导入失败：' + ((err && err.message) || err), 'err', 4000);
+    return;
+  }
+  if (!cfg || cfg.type !== '3dm-config' || !cfg.params) {
+    toast('配置导入失败：文件格式不正确', 'err', 4000);
+    return;
+  }
+  // 版本：当前只有 v1。未知（更新）版本仍尝试导入，但提示可能不兼容，
+  // 而不是直接拒绝 —— 配置里没有真正的破坏性字段变更时，读旧值总比打不开好。
+  if (cfg.version !== undefined && cfg.version !== CONFIG_VERSION) {
+    toast(`配置版本为 v${cfg.version}（当前支持 v${CONFIG_VERSION}），已尝试导入`, 'err', 4000);
+  }
+  // 缺陷 6：白名单 + 类型/范围校验，取代裸 Object.assign
+  const { params, warnings } = sanitizeParams(cfg.params);
+  Object.assign(P, params);
+  if (warnings.length) {
+    console.warn('[导入配置] 以下字段无效或未知，已回退默认值：', warnings);
+    toast(`配置已导入，但部分字段无效已回退默认：${warnings.slice(0, 3).join('、')}${warnings.length > 3 ? ' 等' : ''}`, 'err', 5000);
+  }
+  // P1-1：导入即完全对齐配置文件内容。清空必须发生在 ZIP 贴图的**异步回调之前**，
+  // 否则"清空"会晚于回调，把刚导入的贴图删掉（竞态）。
+  resetTexSlot(1); resetTexSlot(2);
+
+  // P0-2：贴图是异步解码的，成败只能在回调里知道 —— 不能在同步流程末尾直接判断，
+  // 那时回调还没跑，失败数恒为 0。改用 texDone 计数收敛，全部结束后统一给结论。
+  let texTotal = 0, texDone = 0, texFailed = 0;
+  const finishTex = () => {
+    if (++texDone < texTotal) return;      // 还有条目未回调
+    if (texFailed) toast(`配置已导入，但有 ${texFailed} 张贴图加载失败`, 'err', 4000);
+    else if (!warnings.length) toast('配置已导入', 'ok');
+  };
+  if (zipFiles) {
+    for (const [name, data] of zipFiles) {
       if (name === 'config.json') continue;
       const slot = name.startsWith('tex1') ? 1 : name.startsWith('tex2') ? 2 : 0;
       if (!slot) continue;
-      const mime = name.endsWith('.png') ? 'image/png' : name.endsWith('.jpg') || name.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
+      texTotal++;
+      const mime = name.endsWith('.png') ? 'image/png'
+        : name.endsWith('.jpg') || name.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
       const dataURL = `data:${mime};base64,` + b64FromBytes(data);
-      if (slot === 1) {
-        makeTex(dataURL, t => { setTex(1, t); refreshTextures(); rebuild(); setDZPreview(document.getElementById('dz1'), dataURL, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); })); });
-      } else {
-        makeTex(dataURL, t => { setTex(2, t); refreshTextures(); rebuild(); setDZPreview(document.getElementById('dz2'), dataURL, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); })); });
-      }
+      makeTex(dataURL, t => {
+        try {
+          setTex(slot, t); refreshTextures(); rebuild();
+          if (slot === 1) {
+            setDZPreview(document.getElementById('dz1'), dataURL, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); }));
+          } else {
+            setDZPreview(document.getElementById('dz2'), dataURL, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); }));
+          }
+        } finally {
+          finishTex();   // 成功回调内部抛错也要收敛，否则永远等不到"配置已导入"
+        }
+      }, err => {
+        texFailed++;
+        console.error('[导入配置] 贴图加载失败', name, err);
+        toast(`配置中的${slot === 1 ? '主贴图' : '腕托贴图'}加载失败（文件可能已损坏）`, 'err', 4000);
+        finishTex();
+      });
     }
-  } else {
-    cfg = JSON.parse(new TextDecoder().decode(buf));
   }
-  if (!cfg || cfg.type !== '3dm-config' || !cfg.params) throw new Error('文件格式不正确');
-  Object.assign(P, cfg.params);
-  // 兼容旧版配置：经典轮廓锚点曾以 {p:{x,y}, h1, h2} 嵌套结构存储，
-  // 运行时约定为顶层 {x,y,h1,h2}，导入时统一提升，避免被判为无效而退回程序化默认。
-  let cc = cfg.params.classicCtrl;
-  if (Array.isArray(cc) && cc.length && cc[0] && cc[0].p && !('x' in cc[0])) {
-    cc = cc.map(pt => ({
-      x: pt.p.x, y: pt.p.y,
-      h1: pt.h1 ? { x: pt.h1.x, y: pt.h1.y } : undefined,
-      h2: pt.h2 ? { x: pt.h2.x, y: pt.h2.y } : undefined,
-    }));
-  }
-  P.classicCtrl = cc || null;
   rebuild();
   // 导入的锚点可能整体偏离当前视口；此时不在拖拽中，fit 不会造成干扰
   if (curveEdit) fitEditOrtho();
@@ -2589,7 +2987,8 @@ async function importConfigFile(file) {
   if (window.refreshWristUI) window.refreshWristUI();
   uiSyncers.forEach(f => f());
   syncTexUI('t1'); syncTexUI('t2');
-  toast('配置已导入', 'ok');
+  refreshTextures();
+  if (texTotal === 0) finishTex();   // 无贴图条目：结论在这里给
 }
 
 /* ================= 主循环 ================= */
@@ -2601,6 +3000,7 @@ function resize() {
   camera.updateProjectionMatrix();
   // 编辑态：先更新画布尺寸缓存，再按新 aspect 套用视口（不重新 fit，纵向比例保持不变）
   if (curveEdit) { resizeCurveLayer(); applyEditOrtho(); drawCurveOverlay(); }
+  markRenderDirty();   // P1-2：画布尺寸与 camera.aspect 都变了，非编辑态没有别的入口置脏
 }
 window.addEventListener('resize', resize);
 
@@ -2613,10 +3013,25 @@ resize();
 (function loop() {
   requestAnimationFrame(loop);
   curFrame++;                      // 供 rebuildPadCoalesced() 判断"本帧是否已重建"
+  // ⚠️ controls.update() 必须每帧无条件调用，且必须在脏判断之前：
+  // enableDamping 期间它持续改写相机并通过 'change' 事件置脏（见 controls 处的监听）。
+  // 跳过它会导致阻尼尾巴既不渲染、也不再派发 change。
   controls.update();
   // 编辑态：用正交相机渲染（与覆盖层投影严格同源）
   const renderCam = curveEdit && orthoCam ? orthoCam : camera;
-  renderer.render(scene, renderCam);
+  // 按需渲染（P1-2）：静止时完全不重绘（空闲 ~60 次/秒 → ~2 次/秒）。
+  //   renderDirty —— 常规路径。置脏入口：rebuild / updateMatBase / updateLights /
+  //     updateBackground / refreshTextures / applyEditOrtho / resize / 视角切换 /
+  //     OrbitControls 的 change 事件。
+  //   idleFrames >= IDLE_RENDER_MAX —— 安全阀。漏置脏时表现为「最多延迟半秒仍会更新」，
+  //     而不是「永久卡死」；静态场景下的代价是 2 次/秒的冗余渲染，可忽略。
+  if (renderDirty || idleFrames >= IDLE_RENDER_MAX) {
+    renderDirty = false;
+    idleFrames = 0;
+    renderer.render(scene, renderCam);
+  } else {
+    idleFrames++;
+  }
   // 叠加层按需重绘：每帧最多一次。
   //   overlayDirty  —— 常规路径，由 rebuild / applyEditOrtho / resizeCurveLayer 显式置脏；
   //   overlayKey()  —— 兜底，直接比对绘制输入（含几何），任何漏置脏的变化也能捕获。

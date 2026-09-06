@@ -16,10 +16,12 @@
 | 控制点叠加层 | `drawCurveOverlay()` 画的黑色锚点圆 + 橙色手柄方块 | 只画锚点与手柄，**不画轮廓线**——外形看 3D 渲染结果 |
 | 编辑模式 | `curveEdit = true` | 「鼠标垫外形」组第二项，默认不勾选 |
 | 正交相机 | `orthoCam` | 编辑模式专用，与 `shapeToScreen` 投影同源，保证 1:1 |
-| 配置导出 / 导入 | `serializeConfig()` / `importConfigFile()` | 支持 `.json` 与 `.zip`（ZIP 内含贴图） |
-| ZIP 打包 / 解包 | `makeZip()` / `parseZip()` | 纯前端 `CompressionStream` 实现，零依赖 |
+| 配置导出 / 导入 | `serializeConfig()` / `importConfigFile()` | 支持 `.json` 与 `.zip`（ZIP 内含贴图）。导入经 `sanitizeParams()` 白名单校验，见 §5 |
+| ZIP 打包 / 解包 | `makeZip()` / `parseZip()` | 纯前端 `CompressionStream` 实现，零依赖。**只支持 store（method 0）**，其余压缩方式一律抛错 |
 | 导出模型 | `exportModel3D('glb'\|'stl'\|'obj')` | 见 §4 导出 |
 | 模型渲染图 | `exportModelPNG()` | 见 §4 导出 |
+| 渲染脏标记 | `markRenderDirty()` / `markShadowDirty()` | 主循环按需渲染，见 §5。前者管画面，后者管阴影贴图 |
+| LOD 预览 | `enterLOD()` / `commitLOD()` / `ensureFullQuality()` | 交互中用低精度几何，见 §5 |
 | Toast 提示 | `toast(msg, type, ms)` | 所有用户反馈统一走它，**禁止新增 `alert()`** |
 
 ## 2. 单位约定
@@ -53,6 +55,11 @@
 - `bakeClassicCtrl` / `ensureClassicCtrl` / `autoSmoothClassicCtrl`：烘焙 / 校验 / 平滑
 - `norm2(x,y)`：全局归一化工具函数，任何需要单位向量的地方复用它，不要重复定义
 - 端点切线（G1）：`dBLv`/`dBRv` 须取「离开端点沿底轮廓向内」的方向（即 `bottomPts[n-2] - pBL`），反向会导致一侧出现折痕
+
+**渲染与性能**
+- `markRenderDirty()`：主循环**按需渲染**（静止时完全不重绘）。⚠️ 任何改变画面的新入口都必须调用它，漏掉 = 画面不更新。兜底是「连续 30 帧无渲染则无条件渲染一次」的安全阀，漏置脏表现为「最多延迟半秒」而非永久卡死
+- `markShadowDirty()`：阴影贴图按需更新（`shadowMap.autoUpdate = false`）。只与**几何**（`rebuild()`）和**光源**（`updateLights()`）有关。⚠️ 不能改用「把 `keyLight.castShadow` 绑到 `P.shadow`」——那会连带删掉腕托投在垫身上的阴影
+- `enterLOD()` / `commitLOD()` / `ensureFullQuality()`：交互中用低精度几何（`curveSegments 24`、球 `32×24`、`bevelSegments 1`），松手后全质量重建。⚠️ 导出与配置保存前必须 `ensureFullQuality()`，否则成品是低精度版本
 
 **编辑模式**
 - `setEditOrtho()`：按 shape 真实 bbox 计算正交视锥，中心对齐几何中心。改后须由 `rebuild()` / `resize()` 触发重算
@@ -88,8 +95,15 @@
 ## 5. 易错点
 
 - `padMesh` 与 `wristGroup` 是两个独立对象，不要混淆
+- **新增 UI 参数必须同时登记到 `PARAM_SCHEMA`**，否则导入配置时会被静默丢弃（启动时控制台会 warn 未登记的参数）
+- 导出函数（`exportPNG` / `exportModelPNG` / `exportModel3D`）改动渲染器状态时，新代码**必须放进 `try` 块**并由 `finally` 恢复：写在 try 之前的异常不会触发 finally，会让预览永久走形
 - 足迹变换**先缩放后旋转**，不可颠倒（3D 局部矩阵是 `T·R·S`）；垫身总长与腕托位置只能取**未旋转**基准 `buildFootprint(_, true)`，否则旋转会带着垫身拉长、腕托平移
-- 导入配置的完整同步链：`rebuild()` + `refreshShapeUI()` + `refreshWristUI()` + `uiSyncers.forEach()` + `syncTexUI('t1'/'t2')`
+- 导入配置的完整同步链：解析 + `cfg.type` 校验 → `sanitizeParams()` 校验 → `resetTexSlot(1/2)` 清空贴图 → `rebuild()` + `refreshShapeUI()` + `refreshWristUI()` + `uiSyncers.forEach()` + `syncTexUI('t1'/'t2')` + `refreshTextures()`
+  - ⚠️ 清空贴图必须在 `cfg.type` 校验**之后**：否则误选一个普通 JSON 会先清空再报"格式不正确"，把用户已有贴图白白删掉
+  - ⚠️ 清空必须**同步**发生在 ZIP 贴图异步回调之前，否则会把刚导入的贴图删掉（竞态）
+  - ⚠️ 贴图解码是异步的，成败只能在 `makeTex` 回调里统计；不要在同步流程末尾判断失败数（回调还没跑，恒为 0）
+- `makeTex(url, cb, onFail)`：第三参不可省。`FileReader.readAsDataURL` 对任何文件都成功，真实失败发生在 `<img>` 解码阶段，不走 `onerror`
+- `texControls(el, key, title)` 只存参数名、内部经 `P[key]` 动态取值：**不要在闭包里捕获 `P.t1` / `P.t2` 对象**。导入配置会整体换掉这两个对象，捕获旧引用的控件会写进游离对象（拖动有反应、UI 读数也对，但画面永远不变且不报错）
 - `makeTex(url, cb)` 第二参是加载回调；`setDZPreview(dz, ...)` 第一参必须是 DOM 元素
 - `📋` 粘贴按钮（`.paste-btn`）是 dropzone 的**兄弟节点**，不能放进 dropzone 内部（`innerHTML` 重写会删掉它）；不要加 `.btn` 类
 - 调试前硬刷新（Ctrl+Shift+R），避免用旧版 JS 判定问题
