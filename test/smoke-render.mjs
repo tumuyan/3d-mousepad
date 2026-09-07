@@ -95,6 +95,43 @@ try {
   ok('LOD：拖动时用低精度、松手后回到全质量', draftMax > 0 && fullMax > draftMax * 1.5,
     `draft max verts=${draftMax}, full max verts=${fullMax}`);
 
+  /* ---------- 方案 A：侧壁平滑法线 + 顶点焊接 ---------- */
+  // 历史：ExtrudeGeometry 产出**非索引**几何，其 computeVertexNormals() 只能得到逐面法线，
+  // 倒角于是表现为一圈平面带（bevelSegments 段可见棱线）。weldCreased() 一次完成
+  // 「焊接成索引几何 + 按折痕角平滑法线」，位置一个字节都不动。
+  // 失效时**不报错、不崩溃**，只是倒角重新变棱面 —— 现有断言一条也发现不了，故断言焊接结果。
+  // ⚠️ 依赖页面上的 window.padGeoInfo（与 setDbgRebuild 同类的调试读取口）。
+  const padInfo = () => page.evaluate(() => window.padGeoInfo());
+  const setSliderVal = async (label, v) => {
+    await page.evaluate(([label, v]) => {
+      const row = [...document.querySelectorAll('#panel .row')]
+        .find(r => r.querySelector('label')?.textContent === label);
+      const inp = row.querySelector('input[type=range]');
+      inp.value = v;
+      inp.dispatchEvent(new Event('input', { bubbles: true }));   // set：重建
+      inp.dispatchEvent(new Event('change', { bubbles: true }));  // 收尾 LOD：回到全质量
+    }, [label, v]);
+    await page.waitForTimeout(500);
+  };
+
+  const padA = await padInfo();
+  ok('方案 A：垫身已焊接为索引几何，且保留顶面/边缘两个材质分组',
+    !!padA && padA.indexed && padA.groups === 2 && padA.hasNormal, JSON.stringify(padA));
+  // 非索引时顶点数恒等于 三角数×3；焊接后每个三角摊不到 1 个顶点
+  ok('方案 A：顶点被复用（顶点数 < 三角数）',
+    !!padA && padA.verts < padA.tris, `verts=${padA?.verts}, tris=${padA?.tris}`);
+  // 倒角与顶/底盖相切（G1），整圈都该被平滑 → 不该有顶点因折痕被拆开
+  ok('方案 A：有倒角时盖面与倒角平滑过渡（无折痕拆分）',
+    !!padA && padA.verts === padA.uniquePos, JSON.stringify(padA));
+
+  await setSliderVal('边缘倒角', 0);
+  const padB = await padInfo();
+  // 无倒角时顶/底盖与侧壁是 90° 硬边，必须拆开，否则边缘会被抹成软过渡
+  ok('方案 A：无倒角时顶/底 90° 硬边被保留（顶点被折痕拆开）',
+    !!padB && padB.indexed && padB.verts > padB.uniquePos,
+    `verts=${padB?.verts}, uniquePos=${padB?.uniquePos}`);
+  await setSliderVal('边缘倒角', 3);
+
   /* ---------- 只影响材质的参数：不得重建几何、不得白渲阴影、不得重传纹理 ---------- */
   // 历史：这类参数曾统一走 rebuild()，白跑 ExtrudeGeometry + 腕托球体；光照组还曾无条件
   // markShadowDirty()，让 5 个与阴影无关的控件每次输入都重渲一次 2048² 深度图；贴图变换

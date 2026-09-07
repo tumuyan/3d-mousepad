@@ -1136,6 +1136,150 @@ function makeShape() {
   return s;
 }
 
+/* ---------- 方案 A：侧壁平滑法线 + 顶点焊接 ----------
+   ExtrudeGeometry 产出的是**非索引**几何（逐三角各存一份顶点），其末尾的
+   computeVertexNormals() 因此只能得到**逐面法线** —— 倒角表现为一圈平面带，
+   bevelSegments=5 时高光上有 5 条可见棱线。这是"侧边不够精细"的主因，比段数更关键。
+
+   本函数一次做完两件事（等价于 addons 的 toCreasedNormals + mergeVertices，
+   但改用整数哈希 + 类型化数组，且只需一趟面遍历，实测比 addon 快约一个数量级）：
+     1) 按位置焊接成**索引**几何（顶点数约降到 1/5，渲染与显存同步下降）；
+     2) 法线按**折痕角**聚类平均：夹角小于阈值的相邻面共享法线（平滑），
+        大于阈值的各自保留（硬边：凹角、无倒角时的顶/底转折）。
+
+   设计取舍：
+   - 键用 float32 的**位模式**做精确比较：重合顶点都来自 ExtrudeGeometry 内部同一
+     占位符的拷贝，位级必等，故不需要 mergeVertices 那种"量化 + 字符串"的模糊键。
+   - 累加**未归一化**的叉积（即面积加权），比平均单位法线更接近真实曲面法线。
+   - 除 `normal` 外的顶点属性（`position` / `uv`，以及以后新增的任何属性）都按**代表角**
+     原样复制：用遍历而非「position + uv」白名单，新增属性不会被静默丢弃。
+   - 只改法线与索引，**位置一个字节都不动** → 外廓、厚度、包围盒、阴影全部不变，
+     Agents.md §2 的尺寸公式与导出尺寸不受影响。
+
+   ⚠️ groups 必须原样还原：焊接后的三角形顺序不变，故 group 的 start/count
+      （索引单位）与焊接前（顶点单位）数值相同，可直接照抄；若丢掉 groups，
+      顶/边两种材质（导出为 PadTop / PadEdge）会退化成只有顶面一种。
+   ⚠️ 输入必须是非索引三角汤；带 index 或顶点数非 3 的倍数时原样返回（不做假设）。   */
+const PAD_CREASE_DEG = 60;          // 折痕角：面夹角大于此值保持硬边
+const NEG_ZERO_BITS = -2147483648;  // float32 的 -0 位模式，归一化成 +0 以免被判成不同位置
+// ⚠️ 查询侧与存储侧**都要**归一化：只归一查询值的话，代表顶点若存的是 -0，
+//    后续所有 +0 的查询都匹配不上它 → 同一位置被拆成两个组，静默退化成不焊接。
+const nzBits = x => (x === NEG_ZERO_BITS ? 0 : x);
+function weldCreased(geo, creaseDeg) {
+  const src = geo.attributes.position;
+  const n = src.count;
+  if (geo.index || !n || n % 3) return geo;
+  const f32 = src.array;
+  const bits = new Int32Array(f32.buffer, f32.byteOffset, n * 3);
+
+  // ① 按位置分组（开放寻址 + 桶内链）
+  const HB = 1 << (32 - Math.clz32(Math.max(16, n * 2 - 1)));   // ≥ 2n 的 2 的幂，装填因子 ≤ 0.5
+  const mask = HB - 1;
+  const bucket = new Int32Array(HB).fill(-1);
+  const gNext = new Int32Array(n).fill(-1);
+  const gVert = new Int32Array(n);
+  const gid = new Int32Array(n);
+  let G = 0;
+  for (let i = 0; i < n; i++) {
+    const i3 = i * 3;
+    let a = bits[i3], b = bits[i3 + 1], c = bits[i3 + 2];
+    if (a === NEG_ZERO_BITS) a = 0;
+    if (b === NEG_ZERO_BITS) b = 0;
+    if (c === NEG_ZERO_BITS) c = 0;
+    let h = Math.imul(a ^ 0x9e3779b1, 0x85ebca6b);
+    h = Math.imul(h ^ b, 0xc2b2ae35);
+    h = Math.imul(h ^ c, 0x27d4eb2f);
+    h = (h ^ (h >>> 15)) & mask;
+    let g = bucket[h];
+    while (g >= 0) {
+      const v3 = gVert[g] * 3;
+      if (nzBits(bits[v3]) === a && nzBits(bits[v3 + 1]) === b && nzBits(bits[v3 + 2]) === c) break;
+      g = gNext[g];
+    }
+    if (g < 0) { g = G++; gVert[g] = i; gNext[g] = bucket[h]; bucket[h] = g; }
+    gid[i] = g;
+  }
+
+  // ② 面法线按折痕角聚类（每个位置组内可能分裂出多个簇 = 硬边处顶点被拆开）
+  // 判据是**贪心**的：新面法线只与簇的**种子法线**（簇内第一个面）比夹角，命中即并入。
+  // 因此结果与面的遍历顺序有关（极端情形：夹角 0°/50°/100°、阈值 60°，顺序不同可能全平滑
+  // 或拆成两簇）。addons 的 toCreasedNormals 同为贪心，实测本项目的几何不受影响
+  // （有倒角时整圈 G1 相切，拆不拆都一样；无倒角时是干脆的 90°，一定拆开）。
+  const creaseDot = Math.cos(creaseDeg * Math.PI / 180);
+  const clSeed = new Float32Array(n * 3);
+  const clSum = new Float32Array(n * 3);
+  const clNext = new Int32Array(n).fill(-1);
+  const clG = new Int32Array(n);
+  const gCl = new Int32Array(G).fill(-1);
+  const cornerCl = new Int32Array(n);
+  let C = 0;
+  for (let f = 0; f < n; f += 3) {
+    const a3 = f * 3, b3 = a3 + 3, c3 = a3 + 6;
+    const ax = f32[a3], ay = f32[a3 + 1], az = f32[a3 + 2];
+    const e1x = f32[b3] - ax, e1y = f32[b3 + 1] - ay, e1z = f32[b3 + 2] - az;
+    const e2x = f32[c3] - ax, e2y = f32[c3 + 1] - ay, e2z = f32[c3 + 2] - az;
+    const nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+    const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    const ux = nx / len, uy = ny / len, uz = nz / len;
+    for (let k = 0; k < 3; k++) {
+      const ci = f + k;
+      const g = gid[ci];
+      let cl = gCl[g], hit = -1;
+      while (cl >= 0) {
+        if (clSeed[cl * 3] * ux + clSeed[cl * 3 + 1] * uy + clSeed[cl * 3 + 2] * uz > creaseDot) { hit = cl; break; }
+        cl = clNext[cl];
+      }
+      if (hit < 0) {
+        hit = C++;
+        clSeed[hit * 3] = ux; clSeed[hit * 3 + 1] = uy; clSeed[hit * 3 + 2] = uz;
+        clNext[hit] = gCl[g]; clG[hit] = g; gCl[g] = hit;
+      }
+      clSum[hit * 3] += nx; clSum[hit * 3 + 1] += ny; clSum[hit * 3 + 2] += nz;   // 面积加权
+      cornerCl[ci] = hit;
+    }
+  }
+
+  // ③ 每个簇输出一个顶点（簇只属于一个位置组，故可按组顺序连续编号）
+  const clOut = new Int32Array(C);
+  let V = 0;
+  for (let g = 0; g < G; g++) for (let cl = gCl[g]; cl >= 0; cl = clNext[cl]) clOut[cl] = V++;
+
+  const out = new THREE.BufferGeometry();
+
+  // 位置与其它顶点属性（uv / uv1 / color…）一律从**代表角**复制。
+  // 用遍历而非「position + uv」白名单：以后给垫身新增属性不会被静默丢弃。
+  for (const name of Object.keys(geo.attributes)) {
+    if (name === 'normal') continue;          // normal 由本函数生成，不复制
+    const sa = geo.attributes[name], item = sa.itemSize;
+    const dst = new sa.array.constructor(V * item);
+    for (let cl = 0; cl < C; cl++) {
+      const d = clOut[cl] * item, s = gVert[clG[cl]] * item;
+      for (let k = 0; k < item; k++) dst[d + k] = sa.array[s + k];
+    }
+    out.setAttribute(name, new THREE.BufferAttribute(dst, item, sa.normalized));
+  }
+
+  const nrm = new Float32Array(V * 3);
+  for (let cl = 0; cl < C; cl++) {
+    const o = clOut[cl] * 3;
+    let nx = clSum[cl * 3], ny = clSum[cl * 3 + 1], nz = clSum[cl * 3 + 2];
+    const l = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (l > 1e-12) { nx /= l; ny /= l; nz /= l; }
+    else { nx = 0; ny = -1; nz = 0; }        // 退化面：与 flattenBelowY 一致，补朝下
+    nrm[o] = nx; nrm[o + 1] = ny; nrm[o + 2] = nz;
+  }
+  out.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+
+  // 索引类型按最大下标选：V=65536 时下标 0..65535 仍可用 Uint16
+  const IdxArr = V > 65536 ? Uint32Array : Uint16Array;
+  const index = new IdxArr(n);
+  for (let i = 0; i < n; i++) index[i] = clOut[cornerCl[i]];
+  out.setIndex(new THREE.BufferAttribute(index, 1));
+  for (const g of geo.groups) out.addGroup(g.start, g.count, g.materialIndex);
+  geo.dispose();
+  return out;
+}
+
 // 世界坐标平面投影 UV：X/Z 用同一尺度，保证贴图渲染长宽比不随外形参数变化（cover 模式）
 function uvScale() { return Math.max(P.padW, padHeight()); }
 function planarUV(geo) {
@@ -1283,8 +1427,10 @@ function buildPad() {
   geo.translate(0, 0, -P.thick / 2);
   geo.rotateX(-Math.PI / 2);
   planarUV(geo);
+  // 方案 A：逐面法线 → 折痕平滑 + 顶点焊接（位置不变，只改法线与索引）
+  const geo2 = weldCreased(geo, PAD_CREASE_DEG);
 
-  padMesh = new THREE.Mesh(geo, [baseTopMat(), baseEdgeMat()]);   // [0]=顶面, [1]=边缘
+  padMesh = new THREE.Mesh(geo2, [baseTopMat(), baseEdgeMat()]);   // [0]=顶面, [1]=边缘
   padMesh.castShadow = padMesh.receiveShadow = true;
   scene.add(padMesh);
 
@@ -1391,7 +1537,8 @@ function buildWrist(topY) {
 /* ---------- 调试：rebuild 耗时统计（默认关闭） ---------- */
 // console.* 自身开销不可忽略（字符串格式化 + 参数结构化克隆跨进程序列化 +
 // DevTools 打开时还要经 CDP 传输），实测开 DevTools 下单次可达 0.1~1ms，
-// 而 rebuild 仅 7~11ms、拖拽时 60 次/秒 —— 常开会把被测对象拖慢到失真。
+// 而 rebuild 仅约 10~14ms（容器 CPU 实测：垫身 ~10.6 + 腕托 ~2~3，见 OPTIMIZATION.md §0.5）、
+// 拖拽时 60 次/秒 —— 常开会把被测对象拖慢到失真。
 // 故默认关闭，由「调试」面板勾选框开启。
 // 关键：关闭时 tNow() 直接返回 0，连 performance.now() 都不调用，做到零开销。
 // 另：计时区间只包住实际工作，console.log 发生在 t3 之后，
@@ -1404,13 +1551,16 @@ const dbg = { n: 0, total: 0, max: 0, pad: 0, wrist: 0, wristN: 0, ortho: 0, ort
 const DBG_WIN = 500;   // 汇总窗口(ms)：逐条看单次耗时，汇总看"调用过密"的频率
 
 /* ---------- LOD 预览（P1-3） ----------
-   rebuild() 实测 7–11.75ms/次，而滑条 oninput 与锚点 pointermove 都是逐次同步触发，
+   rebuild() 实测（方案 A 落地前）7–11.75ms/次；方案 A 后容器 CPU 实测垫身段约 10.6ms、
+   全量约 10~14ms（见 OPTIMIZATION.md §0.5）。而滑条 oninput 与锚点 pointermove 都是逐次同步触发，
    拖动时单帧成本直接吃掉大半个 60fps 预算。故在**交互进行中**用低精度几何，
    交互结束（滑条 change / 锚点 pointerup / 退出编辑）再全质量重建一次。
    ⚠️ 导出与配置保存前必须 ensureFullQuality()，否则 GLB / STL / PNG 会拿到低精度版本。   */
+// bevelSegments：焊接后顶点数只有非索引的 ~1/5，故全质量从 5 提到 8（倒角高光更连续，
+// 且**不改变外廓与总厚** —— 最外环始终在 bs=bevelSize 处，与段数无关，见 Agents.md §2）。
 const LOD = {
-  full:  { curveSegments: 72, bevelSegments: 5, sphereW: 72, sphereH: 48 },
-  draft: { curveSegments: 24, bevelSegments: 1, sphereW: 32, sphereH: 24 },
+  full:  { curveSegments: 72, bevelSegments: 8, sphereW: 72, sphereH: 48 },
+  draft: { curveSegments: 24, bevelSegments: 2, sphereW: 32, sphereH: 24 },
 };
 let lodDraft = false;   // 当前是否处于低精度预览
 let lodDirty = false;   // LOD 期间是否真的以低精度重建过（决定收尾要不要补一次全质量重建）
@@ -1420,7 +1570,7 @@ const lodQ = () => (lodDraft ? LOD.draft : LOD.full);
 function enterLOD() { lodDraft = true; }
 // 收尾：拖动结束（滑条 change / 锚点 pointerup / 退出编辑）切回全质量。
 // 只有期间真的用过低精度才补一次 rebuild —— 否则调贴图参数这类不重建的滑条
-// 松手时也会白白多跑一次 7~11ms 的全质量重建。
+// 松手时也会白白多跑一次全质量重建（约 10~14ms，见上方 LOD 说明）。
 function commitLOD() {
   if (!lodDraft) return;
   lodDraft = false;
@@ -1468,6 +1618,26 @@ window.setDbgRebuild = v => {
   dbgReset();
   if (dbgRebuild) console.log(`[rebuild] 计时已开启：逐次打印分段耗时，每 ${DBG_WIN}ms 汇总一次调用频率。`
     + '注意日志本身有开销，测帧率时请关掉。');
+};
+
+// 调试 / 冒烟测试用：垫身几何概要（方案 A 的焊接与折痕是否仍生效）。只读取，不改状态。
+window.padGeoInfo = () => {
+  if (!padMesh) return null;
+  const g = padMesh.geometry;
+  const idx = g.index ? g.index.count : g.attributes.position.count;
+  const ps = g.attributes.position.array;
+  const uniq = new Set();
+  for (let i = 0; i < g.attributes.position.count; i++) {
+    uniq.add(ps[i * 3] + ',' + ps[i * 3 + 1] + ',' + ps[i * 3 + 2]);
+  }
+  return {
+    verts: g.attributes.position.count,
+    tris: idx / 3,
+    indexed: !!g.index,
+    groups: g.groups.length,
+    hasNormal: !!g.attributes.normal,
+    uniquePos: uniq.size,     // 唯一位置数；verts > uniquePos 的差值就是折痕处拆开的顶点
+  };
 };
 
 // padOnly=true 时只重建垫身、跳过腕托。

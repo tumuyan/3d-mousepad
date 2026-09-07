@@ -45,6 +45,7 @@
 **几何**
 - `makeShape()` → `makeClassicShape()`：生成垫身 `THREE.Shape`（上半贝塞尔 + 下半足迹折线）
 - `buildPad()` / `buildWrist(topY)`：构建 `padMesh` / `wristGroup`；顶面高度 = `P.thick/2 + P.bevel`
+- `weldCreased(geo, deg)`（`buildPad()` 内，方案 A）：`ExtrudeGeometry` 是非索引几何 → `computeVertexNormals()` 只能得逐面法线、倒角呈平面带。本函数一次完成「焊接成索引几何 + 按折痕角聚类平滑法线」。⚠️ 只改法线与索引，**位置一个字节都不动**（外廓/厚度/包围盒/阴影不变）
 - `wristFootprint(kind, opts)`：采样腕托足迹（右→左）。⚠️ 变换链必须与 3D 逐字一致：**单位球 → 变形 → 缩放 → 绕 y 旋转**，`noRot=true` 忽略旋转角
 - `buildFootprint(out, noRot)`：`makeClassicShape()` 调两次 —— `false` 出真实轮廓，`true` 出旋转无关的布局基准（垫身总长 + 腕托 z 基准）
 - `rebuild(padOnly)`：`padOnly` 仅在改动只影响 `P.classicCtrl` 时使用（足迹不读锚点，故可跳过腕托）。新增 `padOnly` 调用点前须重新核对依赖
@@ -59,7 +60,9 @@
 **渲染与性能**
 - `markRenderDirty()`：主循环**按需渲染**（静止时完全不重绘）。⚠️ 任何改变画面的新入口都必须调用它，漏掉 = 画面不更新。兜底是「连续 30 帧无渲染则无条件渲染一次」的安全阀，漏置脏表现为「最多延迟半秒」而非永久卡死
 - `markShadowDirty()`：阴影贴图按需更新（`shadowMap.autoUpdate = false`）。只与**几何**（`rebuild()`）和**光源方位**（`updateLights()` 里 `keyLight.position` 变化时）有关。光源强度/颜色、环境光、环境反射、接收面可见性都**不**影响深度图，改这些不要置脏。⚠️ 不能改用「把 `keyLight.castShadow` 绑到 `P.shadow`」——那会连带删掉腕托投在垫身上的阴影
-- `enterLOD()` / `commitLOD()` / `ensureFullQuality()`：交互中用低精度几何（`curveSegments 24`、球 `32×24`、`bevelSegments 1`），松手后全质量重建。⚠️ 导出与配置保存前必须 `ensureFullQuality()`，否则成品是低精度版本
+- `enterLOD()` / `commitLOD()` / `ensureFullQuality()`：交互中用低精度几何（`curveSegments 24`、球 `32×24`、`bevelSegments 2`），松手后全质量重建。⚠️ 导出与配置保存前必须 `ensureFullQuality()`，否则成品是低精度版本
+- `LOD.full.bevelSegments = 8`（原 5）：焊接后顶点数只有非索引的 ~1/5，故段数上调。**段数不影响外廓与总厚**（最外环恒在 `bs = bevelSize` 处，与段数无关），只影响倒角弧面的高光连续性；想压导出体积可下调（STL 按三角收费）
+- `window.padGeoInfo()` / `window.setDbgRebuild(v)`：供调试与冒烟脚本读取的**外部口子**（垫身几何概要 / rebuild 耗时开关）。⚠️ 冒烟脚本依赖 `padGeoInfo` 的返回字段（`indexed` / `groups` / `verts` / `uniquePos`），改字段名或删除会让 4 条方案 A 断言同时失败
 - `wristRough()`：腕托粗糙度（`min(1, P.rough + 0.1)`）的**唯一定义**。`buildWrist()` 与 `updateMatRough()` 必须都调它 —— 写死两份的话，调公式极易只改一处，表现为「拖滑条一个值、重建后跳到另一个值」，不报错
 - 粗糙度分布：顶面 = `P.rough`，腕托 = `wristRough()`，**边缘固定 `EDGE_ROUGH`（0.85）、不随 `P.rough` 变化**。`updateMatRough()` 刻意不带 `edgeMat`：非 `edgeSame` 时边缘恒 0.85，是 `edgeSame` 时它本就是 `padTopMat`。已实测确认（GLB 材质读数 + 与 rebuild 路径截图逐字节相同）
 - `updateMatBase()` / `updateMatRough()` / `updateEdgeColor()` / `updateCutout()`：**纯材质更新路径**，只写 uniform / color，不碰几何、不重建。分别服务：本色与不透明度、表面粗糙、边缘颜色、重复模式（`uCutout`）。四者都只 `markRenderDirty()`，不 `markShadowDirty()`
@@ -99,6 +102,7 @@
 ## 5. 易错点
 
 - `padMesh` 与 `wristGroup` 是两个独立对象，不要混淆
+- `weldCreased()` 之后必须把 `geo.groups` 原样搬进新几何：顶点焊接不会保留 groups，丢了它顶/边两种材质（导出为 `PadTop` / `PadEdge`）会退化成只有顶面一种。三角形顺序不变，故 `start` / `count` 数值照抄即可（焊接前是顶点单位，焊接后是索引单位，数值相同）
 - **新增 UI 参数必须同时登记到 `PARAM_SCHEMA`**，否则导入配置时会被静默丢弃（启动时控制台会 warn 未登记的参数）
 - 导出函数（`exportPNG` / `exportModelPNG` / `exportModel3D`）改动渲染器状态时，新代码**必须放进 `try` 块**并由 `finally` 恢复：写在 try 之前的异常不会触发 finally，会让预览永久走形
 - 足迹变换**先缩放后旋转**，不可颠倒（3D 局部矩阵是 `T·R·S`）；垫身总长与腕托位置只能取**未旋转**基准 `buildFootprint(_, true)`，否则旋转会带着垫身拉长、腕托平移
@@ -119,6 +123,9 @@
 
 ```
 index.html   主程序（纯前端单文件，Three.js 经 importmap 从 CDN 加载）
+demo/        独立 demo 页，与主工程无代码耦合，仅供方案评估，浏览器直接打开即可
+  curvetest.html  曲线算法对比（Catmull-Rom 锚点 vs 真贝塞尔手柄）
+  sidetest.html   侧边（边缘）方案对比：五种侧壁生成方案 + 纯色/贴图两种观感，不接腕托
 server.js    本地静态服务器：node server.js [默认端口 5213]
 README.md    项目说明与运行方式
 package.json 仅声明 playwright 等调试依赖，运行项目不依赖 npm 包

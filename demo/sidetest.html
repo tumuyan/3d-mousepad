@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>侧边方案对比 Demo — 3D MousePad Studio</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; overflow:hidden; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
+  #app { display:flex; height:100vh; background:#17181c; }
+  #panel {
+    width:320px; min-width:320px; height:100%; overflow-y:auto;
+    background:#1e2026; color:#d7d9e0; padding:14px 14px 40px; border-right:1px solid #2c2f38;
+  }
+  #panel::-webkit-scrollbar { width:8px; }
+  #panel::-webkit-scrollbar-thumb { background:#3a3d47; border-radius:4px; }
+  h1 { font-size:16px; font-weight:600; color:#fff; padding:4px 2px 6px; }
+  h1 span { color:#ff7eb6; }
+  .tip { font-size:11px; color:#8b8fa0; line-height:1.7; padding:0 2px 10px; }
+  details { background:#262931; border:1px solid #333743; border-radius:10px; margin-bottom:10px; overflow:hidden; }
+  summary {
+    cursor:pointer; padding:10px 12px; font-size:13px; font-weight:600; color:#e8eaf0;
+    list-style:none; user-select:none; display:flex; align-items:center;
+  }
+  summary::before { content:"▸"; margin-right:8px; font-size:11px; color:#8b8fa0; transition:transform .15s; }
+  details[open] summary::before { transform:rotate(90deg); }
+  .sec-body { padding:4px 12px 12px; }
+  .row { display:flex; align-items:center; margin:7px 0; gap:8px; min-width:0; }
+  .row label { flex:0 0 76px; font-size:12px; color:#a6aab8; }
+  .row input[type=range] { flex:1 1 auto; min-width:0; accent-color:#ff7eb6; height:20px; }
+  .row .val { flex:0 0 62px; width:62px; font-size:11px; color:#c9cdda; text-align:right; font-variant-numeric:tabular-nums; }
+  .row select {
+    flex:1; background:#1a1c22; color:#d7d9e0; border:1px solid #3a3d47; border-radius:6px;
+    padding:5px 8px; font-size:12px; outline:none;
+  }
+  .row input[type=checkbox] { accent-color:#ff7eb6; width:15px; height:15px; }
+  .tip2 { font-size:11px; color:#8b8fa0; line-height:1.75; margin-top:8px; }
+  .tip2 b { color:#c9cdda; font-weight:600; }
+  .btns { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+  button {
+    flex:1 1 auto; background:#2f333d; color:#d7d9e0; border:1px solid #414653; border-radius:6px;
+    padding:6px 8px; font-size:12px; cursor:pointer;
+  }
+  button:hover { border-color:#ff7eb6; color:#ffb9d6; }
+  #stage { position:relative; flex:1; min-width:0; }
+  #stage canvas { display:block; }
+  .lab {
+    position:absolute; left:0; top:0; pointer-events:none; white-space:nowrap;
+    font-size:12px; color:#e8eaf0; text-align:center; text-shadow:0 1px 3px #000;
+  }
+  .lab b { color:#ffd28a; font-weight:600; }
+  .lab i { display:block; font-style:normal; font-size:11px; color:#9aa0b0; margin-top:2px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <h1>侧边方案 <span>对比 Demo</span></h1>
+    <div class="tip">
+      纯外观评估页，与主工程 index.html 无关。五块垫子并排，共用同一组参数，只有<b>侧壁生成方案</b>不同。<br>
+      建议先选「单看」→「近观侧边」再看细节。单位 mm。<br>
+      可切<b>纯色 / 贴图</b>两种模式对比（贴图组在最下方）。
+    </div>
+  </aside>
+  <div id="stage"></div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeVertices, toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
+import { VertexNormalsHelper } from 'three/addons/helpers/VertexNormalsHelper.js';
+
+/* ================= 参数 ================= */
+const P = {
+  // 形状
+  shape: 'rect', size: 180, corner: 26,
+  // 几何（五块共用）
+  thick: 4, bevel: 3,
+  seg: 5,          // 基准倒角段数
+  mul: 3,          // 「高细分」倍率
+  crease: 60,      // 折痕角（度）：大于此夹角保持硬边
+  weld: true,      // 平滑后再做一次顶点合并（索引化）
+  // ⑤ 自定义截面
+  bTop: 3, bBot: 3, exp: 1, inset: 0, waist: 0, steps: 2,
+  // 外观
+  rough: 0.30, metal: 0.15, env: 1.0,
+  topColor: '#3f5480', edgeColor: '#e9e6e0',
+  edgeSame: true,      // 边缘与顶面整体着色（共享同一材质，含贴图）
+  wire: false, showNormals: false, autoRot: false,
+  // 贴图
+  tex: 'none', texScale: 2,
+  // 视图
+  view: 'all',
+};
+
+/* ================= 场景 ================= */
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#171a21');
+const camera = new THREE.PerspectiveCamera(35, 1, 1, 20000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.6);
+keyLight.position.set(-260, 420, 320);
+scene.add(keyLight);
+const rimLight = new THREE.DirectionalLight(0xffffff, 0.5);
+rimLight.position.set(320, 160, -300);
+scene.add(rimLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+
+const topMat  = new THREE.MeshStandardMaterial({ color: P.topColor });
+const edgeMat = new THREE.MeshStandardMaterial({ color: P.edgeColor });
+
+/* ================= 贴图 ================= */
+// 平面投影 UV：与主工程 planarUV() 完全一致（u = x/S+0.5, v = 0.5 - z/S）。
+// 因此顶/底盖贴图正常，侧壁被投影成近似恒定 v 的条带 —— 这正是要评估的现象。
+function planarUV(g) {
+  const S = P.size;
+  const pos = g.attributes.position;
+  const uv = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    uv[i * 2]     = pos.getX(i) / S + 0.5;
+    uv[i * 2 + 1] = 0.5 - pos.getZ(i) / S;
+  }
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
+const texCache = {};
+let customTex = null;
+function makePattern(kind) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const x = c.getContext('2d');
+  if (kind === 'checker') {
+    const n = 8, s = 512 / n;
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      x.fillStyle = (i + j) % 2 ? '#f2f2f2' : '#191922';
+      x.fillRect(i * s, j * s, s, s);
+    }
+  } else if (kind === 'stripe') {
+    const n = 16, s = 512 / n;
+    for (let i = 0; i < n; i++) {
+      x.fillStyle = i % 2 ? '#ff7eb6' : '#20242e';
+      x.fillRect(i * s, 0, s, 512);
+    }
+  } else if (kind === 'grad') {
+    const gr = x.createLinearGradient(0, 0, 512, 512);
+    gr.addColorStop(0, '#0b3d91'); gr.addColorStop(0.5, '#f2f2f2'); gr.addColorStop(1, '#c1121f');
+    x.fillStyle = gr; x.fillRect(0, 0, 512, 512);
+    x.strokeStyle = 'rgba(0,0,0,.35)'; x.lineWidth = 2;
+    for (let i = 0; i <= 16; i++) {
+      x.beginPath(); x.moveTo(i * 32, 0); x.lineTo(i * 32, 512); x.stroke();
+      x.beginPath(); x.moveTo(0, i * 32); x.lineTo(512, i * 32); x.stroke();
+    }
+  } else if (kind === 'rings') {
+    x.fillStyle = '#f0f0f0'; x.fillRect(0, 0, 512, 512);
+    for (let r = 256, k = 0; r > 0; r -= 16, k++) {
+      x.beginPath(); x.arc(256, 256, r, 0, Math.PI * 2);
+      x.fillStyle = k % 2 ? '#101018' : '#e23c3c'; x.fill();
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return t;
+}
+function currentTexture() {
+  if (P.tex === 'none') return null;
+  if (P.tex === 'custom') return customTex;
+  if (!texCache[P.tex]) texCache[P.tex] = makePattern(P.tex);
+  return texCache[P.tex];
+}
+function setCustomTexture(img) {
+  if (customTex) customTex.dispose();
+  customTex = new THREE.Texture(img);
+  customTex.colorSpace = THREE.SRGBColorSpace;
+  customTex.wrapS = customTex.wrapT = THREE.RepeatWrapping;
+  customTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  customTex.needsUpdate = true;
+  P.tex = 'custom';
+  applyLook();
+}
+
+/* ================= UI ================= */
+const panelEl = document.getElementById('panel');
+function groupEl(title, open = true) {
+  const d = document.createElement('details');
+  d.open = open;
+  const s = document.createElement('summary');
+  s.textContent = title;
+  const b = document.createElement('div');
+  b.className = 'sec-body';
+  d.append(s, b);
+  panelEl.appendChild(d);
+  return b;
+}
+// after：为空时走 rebuild()（几何类参数）；贴图/外观类参数传 applyLook 以避免无谓的几何重建
+function slider(p, label, min, max, step, key, fmt, after) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const inp = document.createElement('input');
+  inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = P[key];
+  const val = document.createElement('span'); val.className = 'val';
+  const sync = () => { val.textContent = fmt ? fmt(P[key]) : P[key]; };
+  inp.addEventListener('input', () => { P[key] = parseFloat(inp.value); sync(); (after || rebuild)(); });
+  sync();
+  row.append(lb, inp, val); p.appendChild(row);
+  return { inp, sync };
+}
+function check(p, label, key, after) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!P[key];
+  inp.addEventListener('change', () => { P[key] = inp.checked; (after || rebuild)(); });
+  row.append(lb, inp); p.appendChild(row);
+}
+function selectRow(p, label, key, options, after) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const sel = document.createElement('select');
+  for (const o of options) {
+    const op = document.createElement('option');
+    op.value = o.v; op.textContent = o.t; sel.appendChild(op);
+  }
+  sel.value = P[key];
+  sel.addEventListener('change', () => { P[key] = sel.value; (after || rebuild)(); });
+  row.append(lb, sel); p.appendChild(row);
+  return sel;
+}
+function colorRow(p, label, key) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const inp = document.createElement('input');
+  inp.type = 'color'; inp.value = P[key]; inp.style.width = '48px';
+  inp.addEventListener('input', () => { P[key] = inp.value; applyLook(); });
+  row.append(lb, inp); p.appendChild(row);
+  return inp;
+}
+function fileRow(p, label, hint) {
+  const row = document.createElement('div'); row.className = 'row';
+  const lb = document.createElement('label'); lb.textContent = label;
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = 'image/*'; inp.style.flex = '1'; inp.style.fontSize = '11px';
+  inp.addEventListener('change', () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      const img = new Image();
+      img.onload = () => setCustomTexture(img);
+      img.onerror = () => { hint.textContent = '图片解码失败，请换一张'; };
+      img.src = rd.result;
+    };
+    rd.readAsDataURL(f);
+  });
+  row.append(lb, inp); p.appendChild(row);
+  return inp;
+}
+function buttons(p, items) {
+  const box = document.createElement('div'); box.className = 'btns';
+  for (const it of items) {
+    const b = document.createElement('button');
+    b.textContent = it.t;
+    b.addEventListener('click', it.f);
+    box.appendChild(b);
+  }
+  p.appendChild(box);
+}
+
+/* ================= 形状（Shape XY 平面，单位 mm） ================= */
+function makeShape() {
+  const w = P.size / 2, h = P.size / 2;
+  const s = new THREE.Shape();
+  if (P.shape === 'ellipse') { s.absellipse(0, 0, w, h, 0, Math.PI * 2); return s; }
+  if (P.shape === 'stadium') {
+    const r = Math.min(w, h);
+    s.absarc(0, h - r, r, 0, Math.PI);
+    s.absarc(0, -(h - r), r, Math.PI, Math.PI * 2);
+    s.closePath();
+    return s;
+  }
+  if (P.shape === 'notch') {
+    // 带内凹 V 槽：用于观察尖角 / 凹角处的倒角偏移行为
+    const d = P.size * 0.35, c = P.size * 0.17;
+    const poly = [[-w, -h], [w, -h], [w, -c], [w - d, 0], [w, c], [w, h], [-w, h]];
+    s.moveTo(poly[0][0], poly[0][1]);
+    for (let i = 1; i < poly.length; i++) s.lineTo(poly[i][0], poly[i][1]);
+    s.closePath();
+    return s;
+  }
+  const r = Math.min(P.corner, w, h);
+  s.moveTo(-w + r, -h);
+  s.lineTo(w - r, -h);  s.absarc(w - r, -h + r, r, -Math.PI / 2, 0);
+  s.lineTo(w, h - r);   s.absarc(w - r, h - r, r, 0, Math.PI / 2);
+  s.lineTo(-w + r, h);  s.absarc(-w + r, h - r, r, Math.PI / 2, Math.PI);
+  s.lineTo(-w, -h + r); s.absarc(-w + r, -h + r, r, Math.PI, Math.PI * 1.5);
+  return s;
+}
+
+/* ================= 方案 ①②③④：ExtrudeGeometry ================= */
+function buildExtrude(shape, seg) {
+  const g = new THREE.ExtrudeGeometry(shape, {
+    depth: P.thick,
+    curveSegments: 64,
+    bevelEnabled: P.bevel > 0,
+    bevelThickness: P.bevel,
+    bevelSize: P.bevel * 0.9,
+    bevelSegments: Math.max(1, Math.round(seg)),
+    steps: 1,
+  });
+  g.translate(0, 0, -P.thick / 2);
+  g.rotateX(-Math.PI / 2);
+  return g;
+}
+// 平滑：折痕法线（顶/底盖与侧壁的 90° 夹角保持硬边，倒角环之间平滑）
+// ⚠️ mergeVertices 不会保留 groups，必须自行还原，否则双材质会退化成单材质
+function smoothGeo(g) {
+  const gs = g.groups.map(x => ({ ...x }));
+  let r = toCreasedNormals(g, THREE.MathUtils.degToRad(P.crease));
+  if (P.weld) {
+    r = mergeVertices(r, 1e-4);
+    r.clearGroups();
+    for (const x of gs) r.addGroup(x.start, x.count, x.materialIndex);
+  }
+  return r;
+}
+
+/* ================= 方案 ⑤：自定义截面（参数化 loft） ================= */
+const norm2 = (x, y) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
+
+// 闭合折线每点的外法向（角平分线 + 尖角限幅，等价于 ExtrudeGeometry 的 getBevelVec 思路）
+function miterDirs(pts) {
+  const n = pts.length;
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i], b = pts[(i + 1) % n];
+    area += a.x * b.y - b.x * a.y;
+  }
+  const sgn = area > 0 ? 1 : -1;      // CCW：外法向 = (dy, -dx)
+  const dirs = [];
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n], cur = pts[i], next = pts[(i + 1) % n];
+    const e1 = norm2(cur.x - prev.x, cur.y - prev.y);
+    const e2 = norm2(next.x - cur.x, next.y - cur.y);
+    const n1 = { x:  sgn * e1.y, y: -sgn * e1.x };
+    const n2 = { x:  sgn * e2.y, y: -sgn * e2.x };
+    const m  = norm2(n1.x + n2.x, n1.y + n2.y);
+    const cosHalf = m.x * n1.x + m.y * n1.y;
+    const scale = Math.min(3, 1 / Math.max(0.25, cosHalf));
+    dirs.push({ x: m.x * scale, y: m.y * scale });
+  }
+  return dirs;
+}
+
+// 截面：自底到顶的 (高度 y, 外扩 out) 序列
+function buildProfile(k) {
+  const K = Math.max(1, Math.round(k));
+  const half = P.thick / 2;
+  const yB = -half - P.bBot, yT = half + P.bTop;
+  const oBotWall = 0.9 * P.bBot - P.inset, oTopWall = 0.9 * P.bTop;
+  const layers = [];
+  const push = (y, out) => {
+    const l = layers[layers.length - 1];
+    if (l && Math.abs(l.y - y) < 1e-6 && Math.abs(l.out - out) < 1e-6) return;
+    layers.push({ y, out });
+  };
+  push(yB, -P.inset);                                        // 底面
+  for (let j = 1; j <= K; j++) {                             // 下倒角
+    const u = Math.pow(j / K, P.exp);
+    push(yB + P.bBot * Math.sin(u * Math.PI / 2),
+         -P.inset + 0.9 * P.bBot * Math.sin(u * Math.PI / 2));
+  }
+  for (let j = 1; j <= P.steps; j++) {                       // 直壁（可内凹 / 外凸）
+    const s = j / P.steps;
+    push(-half + P.thick * s,
+         oBotWall + (oTopWall - oBotWall) * s + P.waist * Math.sin(Math.PI * s));
+  }
+  for (let j = 1; j <= K; j++) {                             // 上倒角
+    const u = Math.pow(j / K, P.exp);
+    push(half + P.bTop * Math.sin(u * Math.PI / 2),
+         0.9 * P.bTop * Math.cos(u * Math.PI / 2));
+  }
+  push(yT, 0);                                               // 顶面
+  return layers;
+}
+
+const faceN = (t) => {
+  const [a, b, c] = t;
+  const u = { x: b.x - a.x, y: b.y - a.y, z: b.z - a.z };
+  const v = { x: c.x - a.x, y: c.y - a.y, z: c.z - a.z };
+  return { x: u.y * v.z - u.z * v.y, y: u.z * v.x - u.x * v.z, z: u.x * v.y - u.y * v.x };
+};
+
+function buildLoft(shape, k) {
+  const pts = shape.extractPoints(64).shape.map(p => ({ x: p.x, y: p.y }));
+  const dirs = miterDirs(pts);
+  const prof = buildProfile(k);
+  const rings = prof.map(L => pts.map((p, i) => ({
+    x: p.x + dirs[i].x * L.out, y: p.y + dirs[i].y * L.out, h: L.y,
+  })));
+  const N = pts.length, L = rings.length;
+  const V = (r, i) => ({ x: rings[r][i].x, y: rings[r][i].h, z: -rings[r][i].y });
+
+  // ── 盖面（group 0）
+  const caps = [];
+  for (const [li, isBottom] of [[0, true], [L - 1, false]]) {
+    const contour = rings[li].map(p => new THREE.Vector2(p.x, p.y));
+    const faces = THREE.ShapeUtils.triangulateShape(contour, []);
+    const tris = faces.map(f => [V(li, f[0]), V(li, f[1]), V(li, f[2])]);
+    let s = 0;
+    for (const t of tris) s += faceN(t).y * (isBottom ? -1 : 1);
+    if (s < 0) for (const t of tris) t.reverse();
+    caps.push(...tris);
+  }
+  // ── 侧壁（group 1）
+  const sides = [];
+  for (let l = 0; l < L - 1; l++) {
+    for (let i = 0; i < N; i++) {
+      const j = (i + 1) % N;
+      sides.push([V(l, i), V(l, j), V(l + 1, j)]);
+      sides.push([V(l, i), V(l + 1, j), V(l + 1, i)]);
+    }
+  }
+  let s = 0;
+  for (const t of sides) {
+    const n = faceN(t);
+    const cx = (t[0].x + t[1].x + t[2].x) / 3, cz = (t[0].z + t[1].z + t[2].z) / 3;
+    s += n.x * cx + n.z * cz;                    // 与「水平朝外」同向为正
+  }
+  if (s < 0) for (const t of sides) t.reverse();
+
+  const all = caps.concat(sides);
+  const pos = new Float32Array(all.length * 9);
+  let o = 0;
+  for (const t of all) for (const v of t) { pos[o++] = v.x; pos[o++] = v.y; pos[o++] = v.z; }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  g.addGroup(0, caps.length * 3, 0);
+  g.addGroup(caps.length * 3, sides.length * 3, 1);
+  return g;
+}
+
+/* ================= 五块垫子 ================= */
+const PANELS = [
+  { key: 'A', name: '① 现状（逐面法线）', hi: false, smooth: false },
+  { key: 'B', name: '② 现状 + 高细分',    hi: true,  smooth: false },
+  { key: 'C', name: '③ 平滑法线',          hi: false, smooth: true  },
+  { key: 'D', name: '④ 平滑 + 高细分',     hi: true,  smooth: true  },
+  { key: 'E', name: '⑤ 自定义截面',        hi: true,  smooth: true, loft: true },
+];
+const items = PANELS.map((pan, i) => {
+  const grp = new THREE.Group();
+  grp.position.x = (i - (PANELS.length - 1) / 2) * 280;
+  const mesh = new THREE.Mesh(new THREE.BufferGeometry(), [topMat, edgeMat]);
+  grp.add(mesh);
+  scene.add(grp);
+  const lab = document.createElement('div');
+  lab.className = 'lab';
+  stage.appendChild(lab);
+  return { ...pan, grp, mesh, lab, helper: null, note: '', verts: 0, tris: 0, ms: 0 };
+});
+
+function rebuild() {
+  const shape = makeShape();
+  const segH = Math.max(1, Math.round(P.seg * P.mul));
+  const spacing = Math.max(240, P.size * 1.55);
+  items.forEach((it, i) => { it.grp.position.x = (i - (items.length - 1) / 2) * spacing; });
+  for (const it of items) {
+    let geo, note;
+    const t0 = performance.now();
+    if (it.loft) {
+      geo = buildLoft(shape, segH);
+      note = `倒角 ${segH} 段 · 壁 ${P.steps} 段`;
+    } else {
+      const seg = it.hi ? segH : P.seg;
+      geo = buildExtrude(shape, seg);
+      note = `倒角 ${seg} 段`;
+    }
+    planarUV(geo);                 // 五块共用同一套 UV 规则，才可比
+    if (it.smooth) geo = smoothGeo(geo);
+    const ms = performance.now() - t0;
+
+    if (it.mesh.geometry) it.mesh.geometry.dispose();
+    it.mesh.geometry = geo;
+    it.mesh.material = [topMat, P.edgeSame ? topMat : edgeMat];
+    it.note = note;
+    it.ms = ms;
+    it.verts = geo.attributes.position.count;
+    it.tris = (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+    refreshHelper(it);
+  }
+  applyLook();
+  updateLabels();
+}
+
+function refreshHelper(it) {
+  if (it.helper) { it.grp.remove(it.helper); it.helper.dispose(); it.helper = null; }
+  if (P.showNormals) {
+    it.helper = new VertexNormalsHelper(it.mesh, 8, 0x00e5ff);
+    it.grp.add(it.helper);
+  }
+}
+
+function applyLook() {
+  const t = currentTexture();
+  if (t) { t.center.set(0.5, 0.5); t.repeat.set(P.texScale, P.texScale); }
+  // 顶面带贴图；边缘材质恒不带图（不整体着色时它就是纯色边）
+  for (const [m, useTex] of [[topMat, true], [edgeMat, false]]) {
+    const want = useTex ? t : null;
+    if (m.map !== want) { m.map = want; m.needsUpdate = true; }   // map 增删会改 USE_MAP，必须重编译
+    m.roughness = P.rough;
+    m.metalness = P.metal;
+    m.envMapIntensity = P.env;
+    m.wireframe = P.wire;
+  }
+  topMat.color.set(P.topColor);
+  edgeMat.color.set(P.edgeColor);
+  edgeMat.roughness = Math.min(1, P.rough + 0.1);
+  for (const it of items) it.mesh.material = [topMat, P.edgeSame ? topMat : edgeMat];
+}
+
+function updateLabels() {
+  for (const it of items) {
+    it.lab.innerHTML =
+      `<b>${it.name}</b><i>${it.note} · 顶点 ${it.verts} · 三角 ${it.tris} · ${it.ms.toFixed(1)}ms</i>`;
+  }
+}
+
+/* ================= 视图 ================= */
+const VIEWS = {
+  top:    { dir: new THREE.Vector3(0, 1, 0.06), zoom: 1.0 },
+  iso:    { dir: new THREE.Vector3(0, 0.75, 1),  zoom: 1.0 },
+  side:   { dir: new THREE.Vector3(0, 0.14, 1),  zoom: 1.0 },
+  close:  { dir: new THREE.Vector3(0.55, 0.20, 1), zoom: 3.2 },
+};
+function visibleItems() {
+  const i = PANELS.findIndex(p => p.key === P.view);
+  return i >= 0 ? [items[i]] : items;
+}
+function fitCamera(vkey) {
+  const vis = visibleItems();
+  const box = new THREE.Box3();
+  for (const it of vis) box.expandByObject(it.grp);
+  const sph = box.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), P.size)
+                            : box.getBoundingSphere(new THREE.Sphere());
+  const v = VIEWS[vkey] || VIEWS.iso;
+  const R = sph.radius * 1.12 / v.zoom;
+  const vFov = camera.fov * Math.PI / 180;
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+  const d = Math.max(R / Math.sin(vFov / 2), R / Math.sin(hFov / 2));
+  controls.target.copy(sph.center);
+  camera.position.copy(sph.center).addScaledVector(v.dir.clone().normalize(), d);
+}
+function applyView() {
+  const i = PANELS.findIndex(p => p.key === P.view);
+  items.forEach((it, k) => { it.grp.visible = (i < 0 || i === k); it.lab.style.display = it.grp.visible ? '' : 'none'; });
+  fitCamera(lastViewPreset);
+}
+let lastViewPreset = 'iso';
+
+/* ================= 控制面板 ================= */
+{
+  const g1 = groupEl('几何（五块共用）');
+  slider(g1, '基础厚度', 0.5, 20, 0.1, 'thick', v => v.toFixed(1));
+  slider(g1, '边缘倒角', 0, 12, 0.1, 'bevel', v => v.toFixed(1));
+  slider(g1, '倒角段数', 1, 20, 1, 'seg', v => `${v}`);
+  slider(g1, '高细分倍率', 1, 5, 1, 'mul', v => `×${v}`);
+  slider(g1, '垫面尺寸', 100, 320, 10, 'size', v => `${v}`);
+  slider(g1, '圆角半径', 0, 100, 1, 'corner', v => `${v}`);
+  selectRow(g1, '形状', 'shape', [
+    { v: 'rect', t: '圆角矩形' }, { v: 'ellipse', t: '椭圆' },
+    { v: 'stadium', t: '跑道形' }, { v: 'notch', t: '带凹角（尖角测试）' },
+  ]);
+
+  const g2 = groupEl('法线 / 网格');
+  slider(g2, '折痕角', 0, 180, 5, 'crease', v => `${v}°`);
+  check(g2, '二次索引', 'weld');
+
+  const g3 = groupEl('⑤ 自定义截面', true);
+  slider(g3, '上倒角', 0, 12, 0.1, 'bTop', v => v.toFixed(1));
+  slider(g3, '下倒角', 0, 12, 0.1, 'bBot', v => v.toFixed(1));
+  slider(g3, '倒角指数', 0.2, 3, 0.05, 'exp', v => v.toFixed(2));
+  slider(g3, '底部内收', 0, 8, 0.1, 'inset', v => v.toFixed(1));
+  slider(g3, '腰部内凹', -5, 5, 0.1, 'waist', v => v.toFixed(1));
+  slider(g3, '直壁段数', 1, 16, 1, 'steps', v => `${v}`);
+  buttons(g3, [{ t: '复制①②的倒角', f: () => { P.bTop = P.bBot = P.bevel; syncAll(); rebuild(); } }]);
+
+  const g4 = groupEl('外观', true);
+  colorRow(g4, '顶面颜色', 'topColor');
+  colorRow(g4, '边缘颜色', 'edgeColor');
+  check(g4, '边缘随正面整体着色', 'edgeSame', () => { applyLook(); });
+  slider(g4, '粗糙度', 0, 1, 0.01, 'rough', v => v.toFixed(2), () => applyLook());
+  slider(g4, '金属度', 0, 1, 0.01, 'metal', v => v.toFixed(2), () => applyLook());
+  slider(g4, '环境反射', 0, 3, 0.05, 'env', v => v.toFixed(2), () => applyLook());
+  check(g4, '线框', 'wire', () => { applyLook(); });
+  check(g4, '显示法线', 'showNormals', () => { for (const it of items) refreshHelper(it); });
+  check(g4, '自动旋转', 'autoRot', () => { controls.autoRotate = P.autoRot; });
+
+  const g6 = groupEl('贴图', true);
+  selectRow(g6, '图案', 'tex', [
+    { v: 'none', t: '无（纯色）' },
+    { v: 'checker', t: '棋盘格' },
+    { v: 'stripe', t: '条纹' },
+    { v: 'grad', t: '渐变 + 网格' },
+    { v: 'rings', t: '同心圆环' },
+    { v: 'custom', t: '自定义（下方上传）' },
+  ], () => applyLook());
+  slider(g6, '贴图密度', 0.5, 16, 0.5, 'texScale', v => `${v}×`, () => applyLook());
+  const hint = document.createElement('div');
+  hint.className = 'tip2';
+  hint.textContent = '上传后自动切到「自定义」。';
+  fileRow(g6, '上传图片', hint);
+  g6.appendChild(hint);
+  const note = document.createElement('div');
+  note.className = 'tip2';
+  note.innerHTML =
+    'UV 用与主工程一致的<b>平面投影</b>（u=x/S, v=-z/S）：顶面正常，侧壁被压成近似恒定 v 的条带 —— 这正是要评估的现象。<br>' +
+    '勾选「边缘随正面整体着色」时，边缘与顶面共用<b>同一个材质</b>（含贴图），即主工程的 edgeSame，此时「边缘颜色」不生效。<br>' +
+    '贴图与顶面颜色是<b>相乘</b>关系（同主工程），想看纯贴图把顶面颜色调白。';
+  g6.appendChild(note);
+
+  const g5 = groupEl('视图', true);
+  selectRow(g5, '单看', 'view', [
+    { v: 'all', t: '全部' },
+    ...PANELS.map(p => ({ v: p.key, t: p.name })),
+  ]).addEventListener('change', applyView);
+  buttons(g5, [
+    { t: '俯视', f: () => { lastViewPreset = 'top'; fitCamera('top'); } },
+    { t: '45°', f: () => { lastViewPreset = 'iso'; fitCamera('iso'); } },
+    { t: '侧视', f: () => { lastViewPreset = 'side'; fitCamera('side'); } },
+    { t: '近观侧边', f: () => { lastViewPreset = 'close'; fitCamera('close'); } },
+  ]);
+}
+// 「复制①②的倒角」后把滑条读数刷回去
+function syncAll() {
+  document.querySelectorAll('#panel input[type=range]').forEach(inp => {
+    const row = inp.parentElement;
+    const lb = row.querySelector('label').textContent;
+    const map = { '上倒角': 'bTop', '下倒角': 'bBot' };
+    if (map[lb]) { inp.value = P[map[lb]]; row.querySelector('.val').textContent = P[map[lb]].toFixed(1); }
+  });
+}
+
+/* ================= 循环 ================= */
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+
+const tmp = new THREE.Vector3();
+function placeLabels() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  for (const it of items) {
+    if (!it.grp.visible) continue;
+    tmp.set(it.grp.position.x, (P.thick / 2 + Math.max(P.bevel, P.bTop)) + P.size * 0.62, 0).project(camera);
+    it.lab.style.transform =
+      `translate(-50%,-50%) translate(${(tmp.x * 0.5 + 0.5) * w}px, ${(-tmp.y * 0.5 + 0.5) * h}px)`;
+  }
+}
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+  placeLabels();
+});
+
+controls.autoRotateSpeed = 0.8;
+resize();
+rebuild();
+applyView();
+</script>
+</body>
+</html>
