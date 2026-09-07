@@ -69,9 +69,10 @@
 - `uCutout`：由 `patchMapBlend` 的 `onBeforeCompile` 在**编译期求值一次**，故切换重复模式不能只改 `P.t1.wrap` 就完事，必须再调 `updateCutout()` 直写 uniform（旧实现靠 `rebuild()` 重建材质来刷它，代价是全量几何重建）
 
 **编辑模式**
-- `setEditOrtho()`：按 shape 真实 bbox 计算正交视锥，中心对齐几何中心。改后须由 `rebuild()` / `resize()` 触发重算
-- `shapeToScreen()` / `screenToShape()`：以顶面 `P.thick/2 + P.bevel` 为基准投影
-- `setCurveEdit(on)`：切换 `curveEdit`、正交渲染、`controls.enabled`、覆盖层显隐
+- `fitEditOrtho()`：按 shape 真实 bbox 计算正交视锥，中心对齐几何中心。⚠️ 视口已与 `rebuild()` **解耦**（拖锚点不再自动缩放），只在明确入口调用：进入编辑 / 重置锚点 / 适应视图 / 导入配置 / 足迹类滑条（基础宽度、腕托顶距、外形超出腕托）
+- `applyEditOrtho()`：只按当前 `cvCx/cvCy/cvHalf` + 画布 aspect **套用**视锥，不重新 fit。⚠️ 窗口 resize 走的是它、`fitEditOrtho()` 结尾也调它 —— 两者别混用：resize 只改留白，不改变中心与缩放
+- `shapeToScreen()` / `screenToShape()`：以顶面 `P.thick/2 + P.bevel` 为基准投影。倒角在所有模式下都启用，该高度不随编辑模式变化
+- `setCurveEdit(on)`：切换 `curveEdit`、正交渲染、`controls.enabled`、覆盖层显隐。**不重建几何**（只换相机与叠加层），仅 `commitLOD()` 收尾可能残留的低精度状态
 
 **UI / 配置**
 - `uiSyncers`：控件**数值**同步器数组，导入配置后遍历刷新。⚠️ 只同步值，**不处理显隐**

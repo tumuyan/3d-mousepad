@@ -1480,7 +1480,10 @@ function buildWrist(topY) {
   // 无论款式如何都要注销旧腕托材质；切到「无腕托」时若漏掉，材质会一直滞留在 allMats 与显存中
   if (wristMat) { unregMat(wristMat); wristMat = null; }
   wristGroup = new THREE.Group();
-  wristGroup.visible = true;   // 编辑模式下也显示腕托，以呈现真实渲染状况（覆盖层在 DOM 顶层，仍可拖拽）
+  // 编辑模式下也显示腕托，以呈现真实渲染状况（覆盖层在 DOM 顶层，仍可拖拽）。
+  // ⚠️ 这是 wristGroup.visible 的**唯一**写入点：setCurveEdit() 不再 rebuild、也不再兜底置位，
+  // 将来若加「隐藏腕托」之类的开关，必须在这里一并处理，否则进/出编辑无法自愈。
+  wristGroup.visible = true;
   if (P.wristStyle !== 'none') {
     // 裁剪掉低于鼠标垫下表面的部分
     const clip = new THREE.Plane(new THREE.Vector3(0, 1, 0), P.thick / 2 + P.bevel + 0.01);
@@ -2291,7 +2294,9 @@ function buildOrtho() {
 // 屏幕↔形状映射随之改变 → screenToShape() 把同一个光标位置解算成新的形状坐标
 // → 锚点被继续"推走" → 包围盒再变，形成边拖边缩放的正反馈，手感完全失控。
 // 现在 rebuild() 只重建几何、不动视口；视口只在下面这些明确入口重新 fit：
-//   进入编辑 / 重置锚点 / 导入配置 / 窗口 resize / 足迹类滑条（基础宽度、腕托顶距、外形超出腕托）。
+//   进入编辑 / 重置锚点 / 适应视图 / 导入配置 / 足迹类滑条（基础宽度、腕托顶距、外形超出腕托）。
+// ⚠️ 窗口 resize **不**重新 fit，只走 applyEditOrtho()：按新 aspect 套用视锥，
+//   中心与半幅保持不变（否则拖锚点后拉一下窗口，视口就自己跑了）。
 // 拖锚点、双击加点、右键删点期间视口完全锁定。
 let cvCx = 0, cvCy = 0, cvHalf = 150;
 const ZOOM_MARGIN = 1.35;   // fit 时给包围盒留的余量，便于编辑贴边锚点
@@ -2347,9 +2352,7 @@ function fitEditOrtho() {
 function setCurveEdit(on) {
   curveEdit = on && P.shape === 'classic';
   curveLayer.classList.toggle('on', curveEdit);
-  // 编辑模式下隐藏腕托 cushion：它会完全遮住 padMesh 顶面，让用户看不到鼠标垫真实外形
-  if (wristGroup) wristGroup.visible = true;
-  // 先设置 flag 再 rebuild，使 buildPad() 根据 curveEdit 决定是否启用 bevel
+  // 腕托在所有模式下都显示（含编辑模式），由 buildPad() 负责，此处不再动它
   if (curveEdit) {
     prevViewPos = { pos: camera.position.clone(), tgt: controls.target.clone() };
     // keepControls=true：不让 setDragMode 覆盖 enabled，由本函数显式锁定相机（缺陷 9）。
@@ -2370,15 +2373,17 @@ function setCurveEdit(on) {
     controls.enabled = true;
     modeHint.style.display = 'none';
     cvHover = cvDrag = null;
+    // 相机是从 prevViewPos 直接复位的，不经 OrbitControls，必须显式置脏
+    markRenderDirty();
   }
   // 同步复选框显示状态
   document.querySelectorAll('#shapeCtrls input[type=checkbox]').forEach(cb => {
     if (cb.parentElement.textContent.includes('编辑轮廓')) cb.checked = curveEdit;
   });
-  // 进入/退出编辑时重建网格：进入时关 bevel 让覆盖层与网格严格对齐；退出时恢复 bevel
+  // 切换编辑模式只换相机与叠加层，**不重建几何**：
+  // 倒角在所有模式下都启用（buildPad 恒 bevelEnabled: P.bevel > 0），不存在"进入时关 bevel"这回事。
   // P1-3：先收尾可能残留的低精度状态（拖锚点途中直接退出编辑），否则几何会停在 LOD 版本
   commitLOD();
-  rebuild();
 }
 
 function resizeCurveLayer() {
@@ -2395,10 +2400,11 @@ function resizeCurveLayer() {
 // Shape 在 XY 平面内被构造后由 geo.rotateX(-π/2) 放到世界 XZ 平面：
 // 旋转矩阵 [x, y, z] → [x, z, -y]，故 Shape-Y 映射到世界 -Z。
 // 编辑态下使用独立正交相机（orthoCam，up = world -Z），与 3D 渲染严格同源。
-// 编辑模式下 ExtrudeGeometry 的 bevelEnabled=false（见 buildPad），
-// 渲染顶面位于世界 Y = P.thick/2，与 makeShape() 边界严格重合，故投影取此值。
-// 开启 bevel 后 ExtrudeGeometry 顶面位于世界 Y = P.thick/2 + P.bevel，
-// 投影取此值才能使蓝色轮廓与渲染网格严格 1:1 重合。
+// 倒角在所有模式下都启用（buildPad 恒 bevelEnabled: P.bevel > 0，不读 curveEdit），
+// 故 ExtrudeGeometry 顶面恒位于世界 Y = P.thick/2 + P.bevel（见 shapeTopY()）。
+// 投影必须取这个高度，蓝色轮廓才能与渲染网格严格 1:1 重合。
+// ⚠️ 若哪天真的要按模式切 bevel，此处与 shapeTopY() 必须一起改 —— 历史上正是
+// 这个假设过期后只留下注释，导致"顶面 = P.thick/2"的说法反过来误导了读者。
 const shapeTopY = () => P.thick / 2 + P.bevel;
 function shapeToScreen(x, y) {
   const cam = orthoCam || camera;

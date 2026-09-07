@@ -9,11 +9,12 @@ import { serve, open, reporter, EXPECTED_LOG } from './_harness.mjs';
 
 const server = await serve();
 // 统计 WebGL 绘制调用与帧数（不改页面，纯外部插桩）
-// 另计两类"看不见但很贵"的开销：离屏 FBO 绑定（阴影贴图重渲）、纹理上传（整图重传 GPU）
+// 另计三类"看不见但很贵"的开销：离屏 FBO 绑定（阴影贴图重渲）、纹理上传（整图重传 GPU）、
+// bufferData（新几何上传显存 —— rebuild 的必然结果，故用它判断"是否真的重建了几何"）
 const { browser, page, errors } = await open(server, {
   initScript: () => {
     window.__draws = 0; window.__counts = []; window.__frames = 0;
-    window.__fb = 0; window.__tex = 0;
+    window.__fb = 0; window.__tex = 0; window.__buf = 0;
     const patch = p => {
       if (!p) return;
       for (const fn of ['drawElements', 'drawArrays']) {
@@ -31,6 +32,10 @@ const { browser, page, errors } = await open(server, {
       for (const fn of ['texImage2D', 'texSubImage2D']) {
         const orig = p[fn]; if (!orig) continue;
         p[fn] = function (...a) { window.__tex++; return orig.apply(this, a); };
+      }
+      for (const fn of ['bufferData', 'bufferSubData']) {
+        const orig = p[fn]; if (!orig) continue;
+        p[fn] = function (...a) { window.__buf++; return orig.apply(this, a); };
       }
     };
     patch(window.WebGLRenderingContext && WebGLRenderingContext.prototype);
@@ -248,19 +253,43 @@ try {
   ok('切「重复模式」不重建几何且纹理无需重传', mWrap.rebuilds === 0 && mWrap.tex === 0,
     `rebuild ${mWrap.rebuilds} 次，纹理上传 ${mWrap.tex} 次`);
 
-  page.off('console', onRebuild);
-  await page.evaluate(() => window.setDbgRebuild(false));
+  /* ---------- 切换编辑模式不得重建几何 ---------- */
+  // 历史：setCurveEdit() 末尾曾无条件 rebuild()，理由是"进入时关 bevel 让覆盖层与网格对齐"。
+  // 而 buildPad() 恒 `bevelEnabled: P.bevel > 0`、根本不读 curveEdit —— 那次重建一个顶点都没变，
+  // 白跑 ExtrudeGeometry + 腕托球体，还连带白渲一次 2048² 深度图。
+  // 失效时**不报错**，只是每次勾选白花十几毫秒，故断言"不该发生时确实没发生"；
+  // 同时断言画面仍会更新（防止为了把计数归零而干脆不重绘）。
+  // baseView：进入编辑前的画面基线（此时参数已被前面的用例改过，不是出厂默认视图），
+  // 退出后画面必须逐字节回到它。
+  // ⚠️ 逐字节比较的前置条件：画面是「按需渲染 + 无逐帧动画」的确定性输出。
+  // 若将来引入动画循环、或把 toast / 提示条挪进 #stage，这两条需改为"稳定若干帧后再比较"。
+  const baseView = await page.locator('#stage').screenshot();
+  const setEdit = want => page.evaluate(w => {
+    document.querySelectorAll('#shapeCtrls input[type=checkbox]').forEach(cb => {
+      if (cb.parentElement.textContent.includes('编辑轮廓') && cb.checked !== w) cb.click();
+    });
+  }, want);
+  const measureEdit = async want => {
+    await page.evaluate(() => { window.__fb = 0; window.__buf = 0; window.__tex = 0; });
+    rebuildHits = 0;
+    const a = await page.locator('#stage').screenshot();
+    await setEdit(want);
+    await page.waitForTimeout(250);          // 留足两三帧：首次进入还要 buildOrtho + fitEditOrtho
+    const b = await page.locator('#stage').screenshot();
+    const c = await page.evaluate(() => ({ fb: window.__fb, buf: window.__buf }));
+    return { changed: Buffer.compare(a, b) !== 0, fb: c.fb, buf: c.buf, rebuilds: rebuildHits, shot: b };
+  };
+
+  const mEditOn = await measureEdit(true);
+  ok('进入编辑轮廓：画面在 250ms 内更新', mEditOn.changed);
+  ok('进入编辑轮廓不重建几何、不重渲阴影',
+    mEditOn.buf === 0 && mEditOn.fb === 0 && mEditOn.rebuilds === 0,
+    `bufferData ${mEditOn.buf} 次，离屏 FBO ${mEditOn.fb} 次，rebuild ${mEditOn.rebuilds} 次`);
 
   /* ---------- 编辑态相机必须锁定 ---------- */
   // 历史：编辑态曾写 `controls.enabled = false` 后紧跟 `setDragMode('view')`，
   // 后者又把它置回 true —— 赋值是死代码，锁定实际只靠覆盖层拦截指针事件。
   // 故这里必须**关掉覆盖层的事件拦截**才能真正验证，否则测试形同虚设。
-  await page.evaluate(() => {
-    document.querySelectorAll('#shapeCtrls input[type=checkbox]').forEach(cb => {
-      if (cb.parentElement.textContent.includes('编辑轮廓') && !cb.checked) cb.click();
-    });
-  });
-  await page.waitForTimeout(800);
   const editOn = await page.evaluate(() =>
     document.getElementById('curveLayer').classList.contains('on'));
   ok('编辑轮廓模式已开启', editOn);
@@ -281,13 +310,68 @@ try {
     `before=${before.length}B after=${after.length}B`);
 
   await page.evaluate(() => { document.getElementById('curveLayer').style.pointerEvents = ''; });
-  // 退出编辑
+
+  // 退出编辑（同样测量：只换相机与叠加层，几何一个顶点都不该变）
+  const mEditOff = await measureEdit(false);
+  ok('退出编辑轮廓：画面在 250ms 内更新（相机复位已显式置脏）', mEditOff.changed);
+  ok('退出编辑轮廓不重建几何、不重渲阴影',
+    mEditOff.buf === 0 && mEditOff.fb === 0 && mEditOff.rebuilds === 0,
+    `bufferData ${mEditOff.buf} 次，离屏 FBO ${mEditOff.fb} 次，rebuild ${mEditOff.rebuilds} 次`);
+  ok('退出编辑轮廓后画面与进入前逐字节一致（相机已复位）',
+    Buffer.compare(baseView, mEditOff.shot) === 0,
+    `base=${baseView.length}B after=${mEditOff.shot.length}B`);
+
+  // 负向对照：真正改几何的滑条必须仍产生 bufferData 与阴影重渲。
+  // 没有它，上面那几个"0 次"无法与"探针没挂上导致的全 0"区分开。
+  await page.evaluate(() => { window.__fb = 0; window.__buf = 0; });
+  rebuildHits = 0;
+  const thickNow = await page.evaluate(() => Number(
+    [...document.querySelectorAll('#panel .row')]
+      .find(r => r.querySelector('label')?.textContent === '基础厚度')
+      .querySelector('input[type=range]').value));
+  await setSliderVal('基础厚度', Math.abs(thickNow - 6) > 0.05 ? 6 : 3);
+  const neg = await page.evaluate(() => ({ fb: window.__fb, buf: window.__buf }));
+  ok('负向对照：改「基础厚度」确实重建几何并重渲阴影（证明上几条不是假阳性）',
+    neg.buf > 0 && neg.fb > 0 && rebuildHits > 0,
+    `bufferData ${neg.buf} 次，离屏 FBO ${neg.fb} 次，rebuild ${rebuildHits} 次`);
+  // 还原厚度：后续用例虽然都是自比较，但留下一个被改过的全局参数，
+  // 会让以后新增的"依赖默认厚度"的断言静默跑偏，故这里就还原掉。
+  await setSliderVal('基础厚度', thickNow);
+
+  /* ---------- 退出编辑必须收尾 LOD（commitLOD 的护栏） ---------- */
+  // 删掉 setCurveEdit() 末尾的 rebuild() 后，退出编辑时**唯一**的几何收尾就是 commitLOD()。
+  // 而上面几条断言要的恰恰是「退出编辑不 rebuild」—— 少了这条护栏，把 commitLOD() 一起删掉
+  // 也能全绿，代价是几何静默停在低精度版本并被导出（不报错、不崩溃）。
+  // 两者的区别只在「退出前是否真的用过低精度」，故必须真实复现一次：
+  //   编辑态内只发 input（等价于"滑条按住不放" / "锚点拖到一半"，与真实拖拽同构）→ 直接退出编辑。
+  const fullVerts = (await padInfo()).verts;        // 退出前的全质量基线
+  await setEdit(true);
+  await page.waitForTimeout(400);
   await page.evaluate(() => {
-    document.querySelectorAll('#shapeCtrls input[type=checkbox]').forEach(cb => {
-      if (cb.parentElement.textContent.includes('编辑轮廓') && cb.checked) cb.click();
-    });
+    const row = [...document.querySelectorAll('#shapeCtrls .row')]
+      .find(r => r.textContent.includes('腕托顶距'));
+    const inp = row.querySelector('input[type=range]');
+    const v0 = inp.value;
+    const bump = Number(v0) + 10;
+    inp.value = String(bump > Number(inp.max) ? Number(inp.min) : bump);
+    inp.dispatchEvent(new Event('input', { bubbles: true }));   // 只发 input：不松手
+    // 再拖回原值（仍不发 change）：几何参数回到基线，退出后的顶点数才能与基线严格相等 ——
+    // 顺带把"参数是否正确"也纳入断言（顶点数随外形变化，7704 → 挪动后 7794）。
+    inp.value = v0;
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(400);
+  const draftVerts = (await padInfo()).verts;
+  rebuildHits = 0;
+  await setEdit(false);                             // 退出 → commitLOD() 必须补一次全质量重建
+  await page.waitForTimeout(700);
+  const afterVerts = (await padInfo()).verts;
+  ok('编辑态内用过低精度后退出编辑：几何被补回全质量（commitLOD 未失效）',
+    draftVerts < fullVerts && rebuildHits > 0 && afterVerts === fullVerts,
+    `全质量基线 ${fullVerts} 顶点 → 编辑态拖动 ${draftVerts} → 退出后 ${afterVerts}（rebuild ${rebuildHits} 次）`);
+
+  page.off('console', onRebuild);
+  await page.evaluate(() => window.setDbgRebuild(false));
 
   /* ---------- 导出后渲染器状态必须复原 ---------- */
   // 导出会临时把渲染器改成"导出态"（放大画布 + pixelRatio=1 + 可能的 viewOffset），
