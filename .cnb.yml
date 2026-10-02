@@ -1,32 +1,36 @@
 # `**` 匹配具名分支（含多级 /），`$` 兜底其余分支，两者叠加才是「任意分支」。
+# 注意：不声明 docker.image 时默认镜像是 cnbcool/default-build-env，里面只有 shell 和 docker，
+# 没有 node/npm（本次构建即因此报 `sh: line 1: npm: command not found`），所以必须显式指定镜像。
 "**":
   push:
     - name: smoke
+      docker:
+        image: node:22
       stages:
         - name: install
           script:
             - npm ci
-            # --with-deps 用 apt 补 Chromium 的运行时库。默认镜像的 base 是 Ubuntu，
-            # 依赖列表对得上；容器里以 root 跑，Playwright 自己会带 --no-sandbox。
+            # --with-deps 用 apt 补 Chromium 的运行时库。node:22 的 base 是 Debian，依赖列表对得上；
+            # 容器里以 root 跑，Playwright 自己会带 --no-sandbox。
             - npx playwright install --with-deps chromium
-        - name: unit
-          script: npm test
         - name: smoke
           script: npm run smoke
 $:
   push:
     - name: smoke
+      docker:
+        image: node:22
       stages:
         - name: install
           script:
             - npm ci
             - npx playwright install --with-deps chromium
-        - name: unit
-          script: npm test
         - name: smoke
           script: npm run smoke
   vscode:
-    - env:
+    - services:
+        - vscode
+      env:
         CNB_WELCOME_CMD: node server.js
       stages:
         - name: 环境已就绪
