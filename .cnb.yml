@@ -1,0 +1,33 @@
+# `**` 匹配具名分支（含多级 /），`$` 兜底其余分支，两者叠加才是「任意分支」。
+"**":
+  push:
+    - name: smoke
+      stages:
+        - name: install
+          script:
+            - npm ci
+            # --with-deps 用 apt 补 Chromium 的运行时库。默认镜像的 base 是 Ubuntu，
+            # 依赖列表对得上；容器里以 root 跑，Playwright 自己会带 --no-sandbox。
+            - npx playwright install --with-deps chromium
+        - name: unit
+          script: npm test
+        - name: smoke
+          script: npm run smoke
+$:
+  push:
+    - name: smoke
+      stages:
+        - name: install
+          script:
+            - npm ci
+            - npx playwright install --with-deps chromium
+        - name: unit
+          script: npm test
+        - name: smoke
+          script: npm run smoke
+  vscode:
+    - env:
+        CNB_WELCOME_CMD: node server.js
+      stages:
+        - name: 环境已就绪
+          script: echo "终端里 server.js 已监听 5213"
