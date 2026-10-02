@@ -4,7 +4,7 @@
   "description": "3D MousePad Studio — 浏览器端 3D 鼠标垫设计工具（纯前端单文件，零构建）",
   "scripts": {
     "serve": "node server.js",
-    "smoke": "node test/smoke-render.mjs && node test/smoke-export.mjs"
+    "smoke": "node test/smoke-render.mjs && node test/smoke-export.mjs && node test/smoke-mobile.mjs"
   },
   "devDependencies": {
     "playwright": "^1.63.0"

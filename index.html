@@ -2,7 +2,13 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- viewport-fit=cover：全屏时让画布铺到刘海/圆角区域；maximum-scale + user-scalable=no：
+     移动端画布上的单指手势（旋转视角）若被浏览器当成页面缩放，会与应用手势互相打架。
+     本项目是固定布局的设计工具，页面本身没有需要缩放的长文，故禁用页面缩放。 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#17181c">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
@@ -15,14 +21,29 @@
 <link rel="icon" type="image/png" href="favicon.png">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { height:100%; overflow:hidden; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; }
-  #app { display:flex; height:100vh; background:#17181c; }
+  html,body { height:100%; overflow:hidden; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-text-size-adjust:100%; }
+  /* 100dvh 优先：移动端浏览器地址栏收起/展开会改变可视高度，100vh 会让底部被地址栏盖住。
+     旧浏览器回退到 100vh（上一行已声明）。 */
+  #app {
+    display:flex; height:100vh; height:100dvh; background:#17181c;
+    /* ⚠️ #app 必须自己建立一个层叠上下文（z-index + position 即可），
+       否则页面里各浮层会各自另立门户，z-index 互相之间根本不可比：
+       抽屉是 #app 的直接子元素（z:9），工具栏却是 #stage 的后代（z:11），
+       两者属于**不同的层叠上下文**，11 一点都压不住 9 —— 实测抽屉打开时，
+       面板里的 <h1> 标题「3D MousePad Studio」会整个盖在工具栏按钮上，
+       只从按钮缝隙里露出来。下面的层级表以 #app 为唯一基准，才有意义。 */
+    position:relative; z-index:0;
+  }
 
   /* ---------- 侧栏 ---------- */
   #panel {
     width:330px; min-width:330px; height:100%; overflow-y:auto;
     background:#1e2026; color:#d7d9e0; padding:14px 14px 40px;
     border-right:1px solid #2c2f38;
+    -webkit-overflow-scrolling:touch;   /* 移动端惯性滚动 */
+    overscroll-behavior:contain;        /* 滚到尽头不要把滚动传给页面 */
+    padding-left:max(14px, env(safe-area-inset-left));
   }
   #panel::-webkit-scrollbar { width:8px; }
   #panel::-webkit-scrollbar-thumb { background:#3a3d47; border-radius:4px; }
@@ -97,7 +118,17 @@
   button.paste-btn:disabled { opacity:.5; cursor:default; }
 
   /* ---------- 视口 ---------- */
-  #stage { flex:1; position:relative; }
+  #stage {
+    flex:1; position:relative;
+    /* 画布上的手势全部交给 OrbitControls / 贴图编辑，浏览器不要插手：
+       touch-action:none 关掉"滚动 + 双指缩放 + 双击放大"这条内置手势链；
+       overscroll-behavior 关掉"滚到尽头带动页面 / 下拉刷新"（移动端最容易误触的两个行为）。 */
+    touch-action:none; overscroll-behavior:none;
+  }
+  /* 触摸板/触屏上长按画布会弹系统菜单或文字选择，打断拖拽 */
+  #view, #curveLayer { -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  /* 双击视角按钮时不要放大整页（user-scalable=no 在部分安卓浏览器上仍会"双击缩放"） */
+  #toolbar, #panelToggle, #panel { touch-action:manipulation; }
   #view { width:100%; height:100%; display:block; }
   #stage.checker {
     background:#202228;
@@ -106,13 +137,28 @@
       linear-gradient(45deg,#2a2c33 25%,transparent 25%,transparent 75%,#2a2c33 75%);
     background-size:24px 24px; background-position:0 0,12px 12px;
   }
+  /* 工具栏：一个绝对定位的 flex 容器，内部左侧=导出/配置组，右侧=交互模式与视角组。
+     旧实现是 #topbar（left:16px）与 #toolbar（right:16px）两个各自绝对定位的兄弟节点，
+     各自从两端向中间排；视口窄到两组加起来放不下时二者直接重叠、按钮压按钮。
+     改成一个容器 + gap + 允许换行后，放不下就自动折到第二行，永不重叠。 */
+  /* 层级：遮罩(7) < 抽屉(9) = 折叠把手(9) = 工具栏(9)。
+     ⚠️ 抽屉要盖住工具栏（用户明确要的效果），做法是**同层 + 工具栏在 DOM 里更靠后**：
+     同层时后出现的那个赢。工具栏是 #stage 的子节点、抽屉是 #app 的子节点，
+     而 #stage 在 #app 内又排在 #panel **之后**，故工具栏天然在后，被抽屉压住。
+     旧写法给工具栏 z-index:11「高于抽屉」，又因为 #app 当时没有自己的层叠上下文，
+     11 压不住 9 的抽屉 —— 面板里的 <h1> 会整片盖在工具栏按钮上（见 #app 处的注释）。
+     ⚠️ 别把工具栏抬到 10 以上来「修」：那会把抽屉盖回去，按钮重新浮在面板滑条上。 */
   #toolbar {
-    position:absolute; top:14px; right:16px; display:flex; gap:8px; align-items:center;
+    position:absolute; top:14px; left:16px; right:16px; z-index:9;
+    transition:opacity .22s ease;
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    top:max(14px, env(safe-area-inset-top));
+    left:max(16px, env(safe-area-inset-left));
+    right:max(16px, env(safe-area-inset-right));
   }
-  /* 主工具栏（导出图片 / 复制 / 配置）：与 #toolbar 同一行，置于其左方 */
-  #topbar {
-    position:absolute; top:14px; left:16px; right:auto; display:flex; gap:8px; align-items:center; z-index:6;
-  }
+  /* 左组（导出/配置）与右组（模式/视角）把两端占满，中间留白由 flex:1 的占位吃掉 */
+  #toolbar .tb-left, #toolbar .tb-right { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #toolbar .tb-spacer { flex:1 1 0; min-width:0; }
   .dd-btn {
     background:#262931cc; backdrop-filter:blur(6px); border:1px solid #3a3d47; color:#cfd2dc;
     padding:7px 14px; font-size:12px; cursor:pointer; border-radius:8px; transition:.15s;
@@ -124,8 +170,9 @@
     background:#262931f2; backdrop-filter:blur(8px); border:1px solid #3a3d47; border-radius:8px;
     padding:5px; box-shadow:0 6px 20px #000a; z-index:7;
   }
-  /* 左上角 topbar 的菜单向右展开：默认 right:0 会让菜单左边缘伸出屏幕外被裁掉 */
-  #topbar .dd-menu { left:0; right:auto; min-width:180px; white-space:nowrap; }
+  /* 工具栏左组（导出图片/导出模型/配置）的菜单向右展开：默认 right:0 会让菜单左边缘
+     伸出屏幕外被裁掉。右组（模式/视角后无下拉）不受影响。 */
+  #toolbar .tb-left .dd-menu { left:0; right:auto; min-width:180px; white-space:nowrap; }
   .dropdown.open .dd-menu { display:block; }
   .dd-menu button {
     display:block; width:100%; text-align:left; background:transparent; border:none;
@@ -173,6 +220,144 @@
   #dropHint {
     position:absolute; inset:0; display:none; align-items:center; justify-content:center;
     background:#0009; color:#ffb9d6; font-size:20px; font-weight:600; pointer-events:none; z-index:5;
+  }
+
+  /* ---------- 参数按钮（窄屏工具栏里的普通成员） ---------- */
+  /* 它就是工具栏左组里「配置」左边的一个按钮，不再是浮在画布上的固定层。
+     旧实现在窄屏是一个 fixed(左上 + 视口右侧) 的悬浮按钮，抽屉一开就压住
+     面板内容；并入工具栏后层级只剩一层，不再有遮挡问题。 */
+  #panelToggle {
+    display:none;                 /* 宽屏由下面的媒体查询打开 */
+    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #3a3d47;
+    color:#cfd2dc; padding:7px 14px; font-size:12px; cursor:pointer;
+    border-radius:8px; transition:.15s; white-space:nowrap;
+  }
+  #panelToggle:hover { color:#fff; background:#31343e; }
+  /* 文案由状态决定，只有这一处定义 */
+  #panelToggle .pt-close { display:none; }
+  #panelToggle .pt-open { display:inline; }
+  body.panel-open #panelToggle .pt-open { display:none; }
+  body.panel-open #panelToggle .pt-close { display:inline; }
+  /* 抽屉打开时参数按钮语义变为「收起」，并高亮，方便一眼找到出口 */
+  body.panel-open #panelToggle {
+    background:#31343e; border-color:#ff7eb6; color:#ffb9d6;
+  }
+
+  /* ---------- 抽屉折叠把手（贴在抽屉右缘，窄屏可见） ---------- */
+  /* 抽屉滑到屏幕左缘外时，它留在右缘当拉手；抽屉推出来时它跟着抽屉走到
+     右缘当收手。宽 26px，命中区按手指尺寸放大。 */
+  /* 收起态：抽屉右缘（= 屏幕左缘）外贴，只露出 26px 当拉手。
+     展开态：抽屉右缘（= 抽屉宽度）处贴上。
+     ⚠️ 位置用 left + CSS 变量而非 right，是为了让「左缘拉手」这个语义在收起态
+     天然成立；抽屉宽度由媒体查询写进 --panel-w，两处共用同一个值。 */
+  #panelHandle {
+    display:none; position:fixed; left:var(--panel-w, 26px); top:50%;
+    transform:translateY(-50%); z-index:9;
+    width:26px; height:64px; padding:0;
+    border:1px solid #3a3d47; border-left:none;
+    border-radius:0 10px 10px 0;
+    background:#262931e6; backdrop-filter:blur(8px); color:#cfd2dc;
+    font-size:12px; line-height:1; cursor:pointer;
+    transition:left .22s ease, border-color .15s, color .15s;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #panelHandle:hover { background:#31343e; color:#fff; }
+  body.panel-open #panelHandle { border-color:#ff7eb6; color:#ffb9d6; }
+  /* 箭头随状态翻转：收起时指右(拉出)，展开时指左(推回) */
+  #panelHandle .ph-open { display:inline; }
+  #panelHandle .ph-close { display:none; }
+  body.panel-open #panelHandle .ph-open { display:none; }
+  body.panel-open #panelHandle .ph-close { display:inline; }
+
+  /* 抽屉遮罩：只在窄屏打开面板时出现，点它收起。
+     z-index 7：低于抽屉(9)与工具栏(9)，高于画布与工具栏**之前**的内容。 */
+  #panelScrim {
+    display:none; position:fixed; inset:0; z-index:7;
+    background:#00000073; -webkit-tap-highlight-color:transparent;
+  }
+  body.panel-open #panelScrim { display:block; }
+
+  /* ---------- 触屏优化 ---------- */
+  /* 手指比鼠标指针粗得多：滑条与复选框在桌面尺寸下几乎点不中，
+     统一把命中区域抬到 ~44px（iOS HIG 建议的最小可点尺寸）。 */
+  @media (pointer: coarse) {
+    .row { margin:11px 0; }
+    .row input[type=range] { height:34px; }
+    .row input[type=checkbox] { width:22px; height:22px; }
+    .row input[type=color] { width:56px; height:34px; }
+    .row select { padding:9px 10px; font-size:13px; }
+    .row .val { font-size:12px; }
+    .btn { padding:12px 0; }
+    .dd-btn, .seg button { padding:10px 14px; }
+    .dd-menu button { padding:12px 12px; }
+    button.paste-btn { width:34px; }
+    .dz-wrap { padding-left:42px; }
+    .dropzone { padding:16px 12px; }
+    summary { padding:13px 12px; }
+    #about a { display:inline-block; padding:4px 0; }
+  }
+
+  /* ---------- 窄屏 / 移动端布局 ---------- */
+  /* 断点 900px：实测两组合并后的工具栏在更窄处不再重叠（见 toolbar 的 flex-wrap），
+     这里只负责把「左栏常驻」改成「面板抽屉 + 画布占满」——窄屏下 330px 固定侧栏
+     会把画布挤到只剩几十像素，等于没法用。 */
+  @media (max-width: 900px) {
+    /* 抽屉宽度只写一处：抽屉本体与折叠把手定位都用它。
+       ⚠️ 必须挂在 #app（浮层们的共同祖先），不能挂在 #panel —— 把手是 #panel 的
+       兄弟节点，挂在 #panel 上的自定义属性它继承不到（实测表现为展开时把手
+       停在 left:26px 一动不动）。 */
+    #app { --panel-w:min(calc(100vw - 56px), 340px); }
+    #panel {
+      position:fixed; z-index:9; top:0; left:0; height:100%; height:100dvh;
+      /* 宽度不再为「收起」按钮让位（按钮已并入工具栏），可以放心加宽；
+         右侧留 56px 给画布与工具栏按钮露头（抽屉盖住工具栏，但不铺满整屏）。
+         ⚠️ 收起位移就用 -100%（= 抽屉宽）。把手定位是 left:var(--panel-w)，
+         收起态由媒体查询覆盖成 left:0，正好落在屏幕 0..26px。
+         多减一个把手宽会把它推出屏幕外（实测 left:-25px，整只手看不见也点不到）。 */
+      width:var(--panel-w); min-width:0;
+      transform:translateX(-100%); transition:transform .22s ease;
+      box-shadow:0 0 40px #000a;
+      padding-bottom:calc(40px + env(safe-area-inset-bottom));
+    }
+    body.panel-open #panel { transform:translateX(0); }
+    /* 折叠把手与抽屉同步滑动：收起态贴屏幕左缘(left:0)，展开态贴抽屉右缘。 */
+    #panelHandle { display:block; left:0; }
+    body.panel-open #panelHandle { left:var(--panel-w); }
+    #panelToggle { display:block; }
+    /* 抽屉打开时锁住背后的滚动，避免滑动面板带动页面 */
+    body.panel-open { overflow:hidden; }
+    /* 抽屉打开时，工具栏整体淡出并被抽屉盖住（同层 9 + toolbar 在 DOM 中更靠后）。
+       加 pointer-events:none 让桌面端不存在的「顶栏半透明按钮」不会挡到滑条。 */
+    body.panel-open #toolbar { opacity:0; pointer-events:none; }
+    /* 工具栏字号与间距收紧一档，尽量让两组挤进一行 */
+    #toolbar { gap:6px; }
+    #toolbar .tb-left, #toolbar .tb-right { gap:6px; }
+    #toolbar .dd-btn, #toolbar .seg button, #panelToggle { padding:8px 11px; font-size:12px; }
+    #panelHandle { width:24px; height:56px; }
+    .dd-menu { min-width:150px; }
+    #modeHint { font-size:11px; padding:5px 10px; max-width:92vw; white-space:normal; }
+  }
+  @media (max-width: 480px) {
+    /* 极窄：工具栏两组各占一行，左组靠左、右组靠左换行后不再撑满 */
+    #toolbar .tb-spacer { display:none; }
+    #toolbar .tb-left, #toolbar .tb-right { flex:1 1 100%; }
+    #toolbar .tb-right { justify-content:flex-start; }
+    #toolbar .dd-btn, #panelToggle { padding:8px 9px; }
+    #toolbar .seg button { padding:8px 9px; }
+  }
+  /* 横屏手机：高度才是稀缺资源，工具栏再压一档 */
+  @media (max-height: 480px) and (max-width: 900px) {
+    #toolbar .dd-btn, #toolbar .seg button, #panelToggle { padding:6px 9px; font-size:11px; }
+    #toolbar { top:max(10px, env(safe-area-inset-top)); }
+    #panelHandle { height:48px; }
+  }
+
+  /* 系统开了「减少动态效果」就不要抽屉滑入动画 */
+  @media (prefers-reduced-motion: reduce) {
+    #panel { transition:none; }
+    #panelHandle { transition:none; }
+    #toolbar { transition:none; }
+    .toast { transition:none; }
   }
 
   /* ---------- 关于页脚 ---------- */
@@ -251,45 +436,60 @@
     </footer>
   </aside>
 
+  <!-- 折叠把手：贴在抽屉右缘。抽屉收起时它是屏幕左缘的「拉手」，抽屉展开时它
+       跟着抽屉走到右缘当「收手」——不用回头去工具栏找出口。
+       ⚠️ 必须是 #panel 的**兄弟**而不是子元素：#panel 有 overflow-y:auto，
+       会把探出右缘的把手直接裁掉（实测 DOM 在 #panel 内时整只手都画不出来）。 -->
+  <button id="panelHandle" type="button" aria-label="展开参数面板" aria-expanded="false"
+          title="展开 / 收起参数面板"><span class="ph-open">▶</span><span class="ph-close">◀</span></button>
+
+  <div id="panelScrim"></div>
   <main id="stage">
     <canvas id="view"></canvas>
     <canvas id="curveLayer"></canvas>
-    <div id="topbar">
-      <div class="dropdown" id="ddExportImg">
-        <button class="dd-btn">导出图片 ▾</button>
-        <div class="dd-menu">
-          <button data-act="preview">预览图 (PNG)</button>
-          <button data-act="model">渲染图 (PNG)</button>
-        </div>
-      </div>
-      <div class="dropdown" id="ddExportModel">
-        <button class="dd-btn">导出模型 ▾</button>
-        <div class="dd-menu">
-          <button data-act="glb">3D 模型 (GLB，含贴图)</button>
-          <button data-act="stl">3D 模型 (STL，打印)</button>
-          <button data-act="obj">3D 模型 (OBJ)</button>
-        </div>
-      </div>
-      <div class="dropdown" id="ddConfig">
-        <button class="dd-btn">配置 ▾</button>
-        <div class="dd-menu">
-          <button data-act="exportJson">导出配置 (JSON)</button>
-          <button data-act="exportZip">导出配置 (ZIP)</button>
-          <button data-act="import">导入配置…</button>
-        </div>
-      </div>
-      <input type="file" id="cfgFile" accept=".json,.zip,application/json,application/zip" hidden>
-    </div>
     <div id="toolbar">
-      <div class="seg" id="modeSeg" title="鼠标交互模式">
-        <button data-mode="view" class="active">视角</button>
-        <button data-mode="t1">主贴图</button>
-        <button data-mode="t2">腕托贴图</button>
+      <div class="tb-left">
+        <!-- 窄屏：面板收进抽屉，这个按钮开合抽屉；宽屏下由 CSS 隐藏。
+             放在「配置」左边，与其它工具按钮同排，不再是浮在画布上的固定层。 -->
+        <button id="panelToggle" type="button" aria-label="打开参数面板" aria-expanded="false"
+                title="参数面板"><span class="pt-open">⚙ 参数</span><span class="pt-close">▸ 收起</span></button>
+        <div class="dropdown" id="ddExportImg">
+          <button class="dd-btn">导出图片 ▾</button>
+          <div class="dd-menu">
+            <button data-act="preview">预览图 (PNG)</button>
+            <button data-act="model">渲染图 (PNG)</button>
+          </div>
+        </div>
+        <div class="dropdown" id="ddExportModel">
+          <button class="dd-btn">导出模型 ▾</button>
+          <div class="dd-menu">
+            <button data-act="glb">3D 模型 (GLB，含贴图)</button>
+            <button data-act="stl">3D 模型 (STL，打印)</button>
+            <button data-act="obj">3D 模型 (OBJ)</button>
+          </div>
+        </div>
+        <div class="dropdown" id="ddConfig">
+          <button class="dd-btn">配置 ▾</button>
+          <div class="dd-menu">
+            <button data-act="exportJson">导出配置 (JSON)</button>
+            <button data-act="exportZip">导出配置 (ZIP)</button>
+            <button data-act="import">导入配置…</button>
+          </div>
+        </div>
+        <input type="file" id="cfgFile" accept=".json,.zip,application/json,application/zip" hidden>
       </div>
-      <div class="seg" id="viewSeg">
-        <button data-view="persp">透视</button>
-        <button data-view="top">顶视</button>
-        <button data-view="front">前视</button>
+      <div class="tb-spacer"></div>
+      <div class="tb-right">
+        <div class="seg" id="modeSeg" title="鼠标交互模式">
+          <button data-mode="view" class="active">视角</button>
+          <button data-mode="t1">主贴图</button>
+          <button data-mode="t2">腕托贴图</button>
+        </div>
+        <div class="seg" id="viewSeg">
+          <button data-view="persp">透视</button>
+          <button data-view="top">顶视</button>
+          <button data-view="front">前视</button>
+        </div>
       </div>
     </div>
     <div id="modeHint"></div>
@@ -1993,12 +2193,12 @@ texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 
 /* --- 右上角主工具栏：导出图片 / 复制 / 配置 --- */
 (function bindTopbar() {
   // 下拉开关
-  document.querySelectorAll('#topbar .dropdown').forEach(dd => {
+  document.querySelectorAll('#toolbar .tb-left .dropdown').forEach(dd => {
     const btn = dd.querySelector('.dd-btn');
     btn.addEventListener('click', e => {
       e.stopPropagation();
       const open = dd.classList.contains('open');
-      document.querySelectorAll('#topbar .dropdown.open').forEach(o => o.classList.remove('open'));
+      document.querySelectorAll('#toolbar .tb-left .dropdown.open').forEach(o => o.classList.remove('open'));
       if (!open) dd.classList.add('open');
     });
     dd.querySelector('.dd-menu').addEventListener('click', e => {
@@ -2014,7 +2214,7 @@ texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 
     });
   });
   document.addEventListener('click', () => {
-    document.querySelectorAll('#topbar .dropdown.open').forEach(o => o.classList.remove('open'));
+    document.querySelectorAll('#toolbar .tb-left .dropdown.open').forEach(o => o.classList.remove('open'));
   });
   // 配置文件导入（复用已有 importConfigFile）
   const cfgFile = document.getElementById('cfgFile');
@@ -2172,10 +2372,14 @@ function uvAtPoint(e) {
   const S = uvScale();
   return { u: pt.x / S + 0.5, v: 0.5 - pt.z / S };
 }
-// 以鼠标所在位置为锚点缩放贴图（锚点下的贴图像素保持不动）
-function zoomTexAt(tp, t, e) {
-  const ns = THREE.MathUtils.clamp(tp.s * Math.exp(-e.deltaY * 0.001), 0.2, 5);
-  const m = uvAtPoint(e);
+// 单指操作：拖拽锚点途中手指划出画布 / 系统手势介入时，pointerup 可能根本不来，
+// 会让 cvDrag 永久卡住（此后移动手指都在拖那个锚点）。pointercancel 已兜一层，
+// 这里再兜「手指离开屏幕」：触摸事件序列的终点比 pointer 事件更可靠。
+// 以垫面上某个 uv 点（m）为锚点改缩放：反解新的 ox/oy，使该点下的贴图像素不动。
+// ⚠️ 滚轮与双指捏合必须共用本函数。两处都要「以输入位置为锚点」，若各写一份，
+// 改一处必然漏一处 —— 触屏捏合最初就是因为只写 `tp.s = ...` 而没有反解偏移，
+// 表现为「放大后贴图整块从手指下溜走」。
+function zoomTexAbout(tp, t, ns, m) {
   if (!m || !t || !t.image) { tp.s = ns; return; }
   const a0 = t.image.height ? t.image.width / t.image.height : 1;
   const a = a0 * (tp.asp || 1);
@@ -2201,6 +2405,10 @@ function zoomTexAt(tp, t, e) {
   tp.ox = THREE.MathUtils.clamp(offU - (1 - rx2) / 2, -1, 1);
   tp.oy = THREE.MathUtils.clamp(offV - (1 - ry2) / 2, -1, 1);
 }
+// 以鼠标所在位置为锚点缩放贴图（滚轮）
+function zoomTexAt(tp, t, e) {
+  zoomTexAbout(tp, t, THREE.MathUtils.clamp(tp.s * Math.exp(-e.deltaY * 0.001), 0.2, 5), uvAtPoint(e));
+}
 canvas.addEventListener('wheel', e => {
   if (dragMode === 'view') return;
   e.preventDefault();
@@ -2212,6 +2420,95 @@ canvas.addEventListener('wheel', e => {
   }
   refreshTextures(); syncTexUI(dragMode);
 }, { passive: false });
+
+/* ---------- 触屏双指手势：贴图缩放 / 旋转 ----------
+   桌面靠滚轮缩放、Shift+滚轮旋转；触屏没有滚轮，双指捏合是最自然的替代。
+   这里只处理「贴图编辑」模式（dragMode !== 'view'）；视角模式下把双指手势
+   让给 OrbitControls 的 TOUCH.DOLLY_ROTATE（默认行为，不在此拦截）。
+   实现走 touch 事件而非 pointer 事件：浏览器只给「第一根手指」派发稳定的
+   pointer 序列，第二根手指的 pointermove 在多指场景下并不可靠。 */
+let pinch = null;   // 手势起始快照：指距、夹角、两指中点、贴图参数与锚点
+function pinchInfo(e) {
+  const [a, b] = e.touches;
+  return {
+    d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+    a: Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX) * 180 / Math.PI,
+    // 两指中点：双指缩放与旋转的手势锚点，缩放要围绕它做（见 touchmove）
+    x: (a.clientX + b.clientX) / 2,
+    y: (a.clientY + b.clientY) / 2,
+  };
+}
+// 屏幕 client 坐标 ↔ 垫面顶面世界坐标（uvAtPoint 的投影平面就是顶面，两者同源）。
+// 双指整体平移时要把「手指漂移了多少像素」换算成 uv 偏移，必须在这一对函数之间来回，
+// 任何单向近似都会让漂移量带上比例误差。
+let topPlane = null;
+function clientToTopPlane(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  const nx = ((clientX - r.left) / r.width) * 2 - 1;
+  const ny = -((clientY - r.top) / r.height) * 2 + 1;
+  if (!topPlane) topPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  topPlane.constant = -(P.thick / 2 + P.bevel);
+  raycaster.setFromCamera(new THREE.Vector2(nx, ny), camera);
+  const pt = new THREE.Vector3();
+  return raycaster.ray.intersectPlane(topPlane, pt) ? pt : null;
+}
+canvas.addEventListener('touchstart', e => {
+  if (dragMode === 'view' || e.touches.length !== 2) { pinch = null; return; }
+  // 双指接管后要停掉单指平移，否则两根手指会被同时当成拖拽
+  panning = false;
+  const tp = P[dragMode];
+  const { d, a, x, y } = pinchInfo(e);
+  // 手势锚点 = 起始两指中点下的垫面 uv。缩放全程围绕它，而不是画布中心或贴图中心。
+  // m0 与 p0 是同一个位置的两种表示：uv 用于反解偏移，世界坐标用于把后续的手指漂移换算成 uv。
+  const m0 = uvAtPoint({ clientX: x, clientY: y });
+  pinch = {
+    d0: d || 1, a0: a, s0: tp.s, r0: tp.r,
+    ox0: tp.ox, oy0: tp.oy,          // 起始偏移：反解必须以起始状态为基准
+    m0,                              // 起始中点对应的垫面 uv（null = 射线未命中垫面）
+    p0: m0 ? clientToTopPlane(x, y) : null,   // 同一位置的垫面世界坐标，用于算手势漂移
+  };
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  if (!pinch || e.touches.length !== 2) return;
+  e.preventDefault();
+  const tp = P[dragMode];
+  const { d, a, x, y } = pinchInfo(e);
+  // 手指张开（d 变大）应当放大贴图；而 tp.s 越大贴图越小（s 是 uv 的 repeat 系数，
+  // 见 applyTexParams 的 t.repeat.set(p.s * fx, ...)），故这里是 d0/d 而不是 d/d0 ——
+  // 写成 d/d0 会让「张开手指」把贴图缩小，手感正好反着。
+  const ns = THREE.MathUtils.clamp(pinch.s0 * (pinch.d0 / d), 0.05, 20);
+  // 缩放要围绕手势锚点 —— 复用滚轮那条路径的反解，不另写一份（两处各写一份必然漏一处）。
+  // ⚠️ 反解必须在「起始状态」上进行：先用 s0/ox0/oy0 把锚点冻结成贴图坐标，再套用新的 s。
+  // 直接在上一帧的 s/ox/oy 上迭代会把浮点误差逐帧累积，手感上表现为缩放越拖越偏。
+  // 两指整体平移时（指距不变、中点漂移），锚点继续跟随手指：把漂移量换算成 uv 加回偏移。
+  if (pinch.m0) {
+    const m = { u: pinch.m0.u, v: pinch.m0.v };
+    if (pinch.p0) {
+      const p = clientToTopPlane(x, y);
+      if (p) {
+        const S = uvScale();
+        m.u += (p.x - pinch.p0.x) / S;
+        m.v -= (p.z - pinch.p0.z) / S;   // 与 uvAtPoint 的 v = 0.5 - z/S 同向
+      }
+    }
+    const t = dragMode === 't1' ? tex1 : tex2;
+    const prev = { s: tp.s, ox: tp.ox, oy: tp.oy };
+    tp.s = pinch.s0; tp.ox = pinch.ox0; tp.oy = pinch.oy0;   // 反解基准 = 起始状态
+    zoomTexAbout(tp, t, ns, m);
+    if (!t || !t.image) { tp.s = prev.s; tp.ox = prev.ox; tp.oy = prev.oy; }
+  } else {
+    tp.s = ns;
+  }
+  // 两指夹角增量即旋转量取反：atan2 在屏幕坐标（y 向下）里角度增大 = 视觉顺时针，
+  // 而贴图旋转参数 r>0 在画面上是逆时针（uv 的 v 轴向上，叠加 uvAtPoint 的 v = 0.5 - z/S）。
+  // 两者反向，故此处减号不可省 —— 用加号会让手指顺时针时贴图逆时针转。
+  tp.r = THREE.MathUtils.clamp(pinch.r0 - (a - pinch.a0), -360, 360);
+  refreshTextures(); syncTexUI(dragMode);
+}, { passive: false });
+const endPinch = () => { pinch = null; };
+canvas.addEventListener('touchend', endPinch);
+canvas.addEventListener('touchcancel', endPinch);
 
 /* 拖拽到画布 */
 const dropHint = document.getElementById('dropHint');
@@ -2240,6 +2537,15 @@ stage.addEventListener('drop', e => {
   };
   rd.readAsDataURL(file);
 });
+
+/* 调整参数后想看效果，得先手动收起抽屉 —— 视线回到画布即视为"我要看结果"，
+   自动收起。（pointerdown 覆盖鼠标与触摸两种输入。）
+   ⚠️ 注册位置必须在 curveLayer 的 const 声明之后：stage 上的 edit 态下
+   curveLayer 覆盖在其上方，触发顺序是 curveLayer 先、stage 后，本监听自会
+   最后一个跑，不会把"在编辑轮廓时点画布"误判成收起抽屉。
+   之所以放在这里而不是抽屉块旁边，就是因为抽屉块在 curveLayer 之前，
+   写在那儿会踩到 TDZ（Cannot access 'curveLayer' before initialization）。 */
+stage.addEventListener('pointerdown', () => { if (panelOpen()) setPanelOpen(false); });
 
 /* ================= 视角 ================= */
 const D = 480;
@@ -2559,6 +2865,11 @@ const endCurveDrag = () => { if (cvDrag) { cvDrag = null; commitLOD(); } };
 curveLayer.addEventListener('pointerup', endCurveDrag);
 curveLayer.addEventListener('pointercancel', endCurveDrag);
 curveLayer.addEventListener('pointerleave', endCurveDrag);
+// 触屏兜底：拖锚点途中手指划出画布、或被系统手势（通知栏下拉、返回手势）打断时，
+// pointerup 可能根本不来，cvDrag 会永久卡住（此后每次移动手指都在拖那个锚点）。
+// pointercancel 只覆盖一部分情形，touch 序列的终点更可靠，故两者都挂。
+curveLayer.addEventListener('touchend', endCurveDrag);
+curveLayer.addEventListener('touchcancel', endCurveDrag);
 
 // 双击加点：插到最近的曲线段中点
 curveLayer.addEventListener('dblclick', e => {
@@ -3230,9 +3541,51 @@ async function importConfigFile(file) {
   if (texTotal === 0) finishTex();   // 无贴图条目：结论在这里给
 }
 
+/* ================= 面板抽屉（窄屏） ================= */
+/* 窄屏下 #panel 是覆盖在画布上的抽屉，靠 body.panel-open 切换。
+   宽屏时这些类名没有任何 CSS 生效，切不切换都不影响布局，
+   故不必判断视口宽度——按钮本身在宽屏就是 display:none。 */
+const panel = document.getElementById('panel');
+const panelToggle = document.getElementById('panelToggle');
+const panelHandle = document.getElementById('panelHandle');
+const panelScrim = document.getElementById('panelScrim');
+
+// 两个按钮语义相反、都由抽屉状态决定文案，故把「状态 → 无障碍属性」收在一处，
+// 免得日后加了第三种入口时漏掉其中一个的 aria-label。
+const panelBtns = [
+  [panelToggle, '打开参数面板', '收起参数面板'],
+  [panelHandle, '展开参数面板', '收起参数面板'],
+];
+
+function setPanelOpen(on) {
+  document.body.classList.toggle('panel-open', on);
+  // 让辅助技术感知抽屉状态（两个按钮都是 aria-expanded 的持有者）
+  for (const [btn, openLabel, closeLabel] of panelBtns) {
+    btn.setAttribute('aria-expanded', on ? 'true' : 'false');
+    btn.setAttribute('aria-label', on ? closeLabel : openLabel);
+  }
+}
+const panelOpen = () => document.body.classList.contains('panel-open');
+/* 抽屉开合会改变 #stage 宽度，但旧实现在这里只切 class、依赖 ResizeObserver 兜底。
+   这里显式再调一次 resize() 是给「过渡动画被 prefers-reduced-motion 关掉」的情形兜底：
+   没有动画就没有逐帧尺寸变化，ResizeObserver 只会在最终尺寸上报一次，仍是正确值。 */
+const togglePanel = () => { setPanelOpen(!panelOpen()); resize(); };
+panelToggle.addEventListener('click', togglePanel);
+panelHandle.addEventListener('click', togglePanel);
+panelScrim.addEventListener('click', () => setPanelOpen(false));
+// Esc 收起（外接键盘的平板 / 桌面窄窗口）
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && panelOpen()) setPanelOpen(false); });
 /* ================= 主循环 ================= */
 function resize() {
   const w = stage.clientWidth, h = stage.clientHeight;
+  // 与曲线的画布尺寸缓存保持同步：抽屉动画结束、横竖屏切换后 stage 变宽变窄，
+  // 编辑态的叠加层若不跟着重设，锚点会画在错误的位置（resizeCurveLayer 内部会置脏）。
+  if (curveEdit) resizeCurveLayer();
+  // 尺寸为 0 时不要调 setSize：那会把画布的 width/height 属性归零（画布变"死"），
+  // 且 camera.aspect = 0/0 = NaN 会污染投影矩阵，之后即使有尺寸也再不恢复。
+  // 正常窗口下不会出现，但移动端切后台 / 抽屉动画中途取值都可能读到 0，
+  // 故这里直接跳过，等下一次尺寸变化再处理（有 safeW/safeH 兜住 1×1 的 canvas）。
+  if (!w || !h) return;
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
@@ -3241,7 +3594,18 @@ function resize() {
   if (curveEdit) { resizeCurveLayer(); applyEditOrtho(); drawCurveOverlay(); }
   markRenderDirty();   // P1-2：画布尺寸与 camera.aspect 都变了，非编辑态没有别的入口置脏
 }
+
+// ⚠️ 只监听 window.resize 不够：窄屏下 #panel 是覆盖式抽屉，开合**不改变** window 尺寸，
+// 但 #stage 的宽高确实变了。移动端还有地址栏收起、软键盘弹出、横竖屏旋转等只改
+// 可视区高度而不改宽度的情形。漏掉这些 = 画布 backing store 停在旧尺寸被拉伸
+// （实测：抽屉开启时立刻 setSize，取到动画中途的中间宽度，画面被横向拉宽且偏离中心）。
+// 故改用 ResizeObserver 观察 stage 自身的盒子，任何来源的尺寸变化都会走到 resize()。
+// ⚠️ 别用 requestAnimationFrame 之类的一帧延迟来"等"CSS transition 结束 ——
+// transition 有 220ms，延迟一帧根本等不到；ResizeObserver 每次尺寸变化都会回调，
+// 动画中每帧都会触发，最后一帧即为终值，天然正确。
+if (typeof ResizeObserver !== 'undefined') new ResizeObserver(resize).observe(stage);
 window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 60));
 
 rebuild();
 updateLights();

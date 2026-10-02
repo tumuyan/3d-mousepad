@@ -47,11 +47,21 @@ export async function serve() {
   };
 }
 
-export async function open(server, { initScript } = {}) {
+/* 打开页面。
+   viewport / hasTouch / isMobile 可覆盖：移动端用例要窄视口 + 真触摸事件
+   （hasTouch 决定 page.touchscreen 与 'ontouchstart' 是否存在，
+    isMobile 决定视口 meta 是否按移动端解释），默认值即桌面。
+   ⚠️ 传 viewport 会**整体替换**默认值，不是合并，两个尺寸都要写。 */
+export async function open(server, { initScript, viewport, hasTouch, isMobile } = {}) {
   const browser = await chromium.launch({
     args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
   });
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, acceptDownloads: true });
+  const ctx = await browser.newContext({
+    viewport: viewport || { width: 1440, height: 900 },
+    hasTouch: !!hasTouch,
+    isMobile: !!isMobile,
+    acceptDownloads: true,
+  });
   if (initScript) await ctx.addInitScript(initScript);
   const page = await ctx.newPage();
   const errors = [];

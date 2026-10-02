@@ -23,6 +23,14 @@
 | 渲染脏标记 | `markRenderDirty()` / `markShadowDirty()` | 主循环按需渲染，见 §5。前者管画面，后者管阴影贴图 |
 | LOD 预览 | `enterLOD()` / `commitLOD()` / `ensureFullQuality()` | 交互中用低精度几何，见 §5 |
 | Toast 提示 | `toast(msg, type, ms)` | 所有用户反馈统一走它，**禁止新增 `alert()`** |
+| 工具栏 | `#toolbar` | 唯一的顶部工具栏：左组 `.tb-left`（导出/配置）+ 右组 `.tb-right`（模式/视角）。**不要**再新增第二个绝对定位的工具栏 |
+| 参数面板 / 抽屉 | `#panel` | 宽屏常驻左栏；窄屏（≤900px）变覆盖式抽屉，由 `body.panel-open` 切换 |
+| 参数按钮 | `#panelToggle` / `setPanelOpen(on)` | 仅窄屏可见。**就是工具栏左组里的一个普通按钮**（在「配置」左边），不是浮层。文案由 CSS 按 `body.panel-open` 切换，不在 JS 里写 |
+| 折叠把手 | `#panelHandle` / `togglePanel()` | 仅窄屏可见，贴在抽屉右缘：收起时停在屏幕左缘当拉手，展开时跟到抽屉右缘当收手。**必须是 `#panel` 的兄弟节点**（`#panel` 有 `overflow-y:auto`，子元素放进去会被裁掉） |
+| 遮罩 | `#panelScrim` | 抽屉打开时铺满视口，点它收起。**层级低于抽屉**，见 §5 |
+| 手势锚点 | `pinch.m0` / `pinch.p0` | 双指起始中点下的垫面位置（`m0` 是 uv，`p0` 是世界坐标）。缩放全程围绕它，见 §5 |
+| 锚点缩放 | `zoomTexAbout(tp, t, ns, m)` | **以垫面某点为锚点改缩放**的唯一实现：反解 `ox/oy` 使该点下的贴图像素不动。滚轮与双指捏合都走它 |
+| 屏幕 ↔ 垫面映射 | `uvAtPoint(e)` / `clientToTopPlane(x, y)` | 前者给 uv，后者给世界坐标，投影平面都是垫面顶面。手势漂移量必须在这对函数间换算 |
 
 ## 2. 单位约定
 
@@ -81,7 +89,15 @@
 - `slider(parent, label, min, max, step, get, set, note)`：`note` 为可选悬停说明
 - `.row label` 固定 `flex:0 0 64px`，标签不超过 5 个汉字，否则挤压滑条
 - 经典模式「鼠标垫外形」组顺序：`腕托顶距` → `编辑轮廓`（默认不勾选）→ `外形超出腕托`；`重置锚点` 按钮挂在「编辑轮廓」行右侧，恢复 `DEFAULT_CLASSIC_CTRL`
-- `#topbar .dd-menu` 必须左对齐（`.dd-menu` 默认 `right:0` 是为右上角 `#toolbar` 设计的）
+- `#toolbar .tb-left .dd-menu` 必须左对齐（`.dd-menu` 默认 `right:0` 是为右组设计的）。
+  ⚠️ 旧节点名 `#topbar` 已并入 `#toolbar`，下拉菜单的事件绑定选择器同步为
+  `#toolbar .tb-left .dropdown` —— 改结构时**必须**一起改，否则导出/配置菜单全部点不动
+  且不报错（实测：全部 6 个导出/导入入口静默失效，冒烟测试才抓到）
+- `resize()` 由 **ResizeObserver 观察 `#stage`** 触发，另挂 window.resize 与 orientationchange。
+  ⚠️ 不能只监听 window.resize：窄屏抽屉开合**不改变** window 尺寸但 #stage 确实变了；
+  移动端地址栏收起、软键盘、横竖屏旋转也只改可视高度。漏掉会让画布 backing store
+  停在旧尺寸被拉伸（实测取到抽屉动画中途的中间宽度，画面横向拉长且偏离中心）。
+  `resize()` 里尺寸为 0 时直接 return：setSize(0,0) 会把画布置死、`aspect=NaN` 污染投影矩阵
 
 ## 4. 导出
 
@@ -100,7 +116,92 @@
 - GLB 材质是近似：页面的 `onBeforeCompile` 混合与 `cutout` 镂空无法写进 glTF，退化为 `map × color` + 单一 alpha。贴图**定位**精确（`bakeUVTransform` 烘焙 `texture.matrix` 进 uv，绕开 `KHR_texture_transform` 不支持 `center`），但混合强度会丢失
 - `disposeExportRoot()`：释放克隆出的 geometry / material / texture
 
-## 5. 易错点
+## 5. 移动端 / 窄屏适配
+
+**两档断点**（都在 `index.html` 的 `<style>` 末尾，按出现顺序即优先级）：
+
+| 条件 | 变化 |
+| --- | --- |
+| `max-width: 900px` | `#panel` 变覆盖式抽屉（`transform: translateX(-100%)`）、宽度写入 `#app` 的 `--panel-w`，画布占满视口，`#panelToggle` 与 `#panelHandle` 出现 |
+| `max-width: 480px` | 工具栏两组各占一整行 |
+| `max-height: 480px` 且 `max-width: 900px` | 横屏手机：工具栏再压一档 |
+| `pointer: coarse` | 滑条/复选框/按钮的命中区域抬到 ~44px（iOS HIG 最小可点尺寸） |
+
+**必须遵守的约束**
+- 断点用 `900px` 而不是更常见的 `768px`：工具栏两组按钮在 ~1024px 就开始挤，900px 以下已明显重叠
+- 画布区域固定 `touch-action:none` + `overscroll-behavior:none`：否则浏览器会接管单指滑动
+  （变成页面滚动）并在滚到尽头时触发下拉刷新，与 OrbitControls 抢手势
+- `<meta name="viewport">` 带 `maximum-scale=1.0, user-scalable=no, viewport-fit=cover`：
+  移动端画布上的单指旋转若被浏览器当成页面缩放，会与应用手势反复打架
+- 高度一律 `100dvh`（回退 `100vh`）：移动端地址栏收起/展开会改可视高度
+- 安全区：`#panel` / `#toolbar` 的 padding / 定位都套 `env(safe-area-inset-*)`
+- 抽屉宽度只写一处：窄屏 `#app { --panel-w: min(calc(100vw - 56px), 340px) }`，`#panel` 与
+  `#panelHandle` 共用。⚠️ 变量挂在 `#app` 而不是 `#panel`：把手是 `#panel` 的兄弟节点，
+  挂在 `#panel` 上的自定义属性它继承不到（实测表现为展开时把手停在 `left:0` 一动不动）
+- 触摸事件只用于**补 pointer 事件覆盖不到的两类场景**，其余一律走 pointer 事件（桌面触屏共用一套）：
+  - 双指手势：浏览器只给第一根手指派发稳定的 pointer 序列，贴图缩放的 pinch 必须用 `touchstart/move`
+  - 手势中断兜底：拖锚点途中被系统手势打断时 `pointerup` 可能不来，用 `touchend/touchcancel` 收尾
+- ⚠️ **双指缩放的方向是 `ns = s0 * (d0 / d)`，不是 `s0 * (d / d0)`** —— 分母分子不能对调。
+  `tp.s` 是 uv 的 repeat 系数（`t.repeat.set(p.s * fx, ...)`），**越大贴图越小**，与画面大小**反号**。
+  手指张开（`d` 增大）要放大贴图，就得让 `s` 变小，故取 `d0 / d`。
+  写成 `d / d0` 时 `s` 的变化方向「看起来正确」（张开→s 变大），画面却正好反着 ——
+  这个反号让上一版漏掉了，Issue #3 报的「捏合缩放效果还是反的」即此。
+  ⚠️ 回归断言不能只比 `s` 的数值方向，必须同时量画面（如红半边变宽/变窄），
+  单看 `s` 会被这个反号骗过去。
+- ⚠️ **双指缩放的锚点必须反解 `ox/oy`，不能只写 `tp.s = s0 * (d0 / d)`**。
+  只改 `s` 时贴图会**整块从手指底下平移出去**（手感是「越缩越跑」），而不是围绕手指原地放大 ——
+  因为贴图缩放不是围绕画布中心、而是围绕 `ox/oy` 对应的点进行的。反解走 `zoomTexAbout()`，
+  **滚轮与捏合共用同一份**：两处都要「以输入位置为锚点」，各写一份必然漏一处
+  （触屏捏合最初就是这么漏的）。
+  - 锚点取起始两指中点下的垫面 uv（`m0`），**不是**画布中心、也不是贴图中心
+  - ⚠️ 反解必须固定在「手势起始状态」（`s0/ox0/oy0`）上做，再套用新的 `s`。
+    拿上一帧的 `s/ox/oy` 迭代会把浮点误差逐帧累积，表现为缩放越拖越偏
+  - 两指整体平移（指距不变、中点漂移）时锚点要**跟着手指走**：漂移量经
+    `clientToTopPlane` 换算成 uv 加回偏移。锚点通常含有平移分量，忽略它会让手势打架
+  - 起始中点落在垫面外（射线未命中）时退化为「只改 `s`」，此时锚点无意义
+- ⚠️ **双指旋转用 `r -= Δa`，减号不能改成加号**。屏幕坐标 y 向下，`atan2` 角度增大 = 视觉顺时针；
+  而 `P.tn.r > 0` 在画面上是**逆时针** —— three 的 uv rotation 在「v 轴向上」的纹理空间里是逆时针，
+  经 `uvAtPoint` 的 `v = 0.5 - z/S` 翻到画面后方向反转。两者反向，取减号才对得上手。
+  实测（红色半边重心随 r 的位移）：`r=+15` 重心下移 → 逆时针，`r=-15` 重心上移 → 顺时针。
+  改回加号会让「手指顺时针、贴图逆时针」，正是 Issue #3 报的现象；`smoke-mobile` 有两项断言专门盯它。
+- ⚠️ **滚轮缩放的方向与捏合相反，尚未统一**。滚轮是 `s * exp(-deltaY * 0.001)`：
+  滚轮向上（`deltaY < 0`）→ `s` 变大 → 贴图**缩小**；捏合是张开手指 → `s` 变小 → 贴图放大。
+  两者对「放大」的手势约定不一致（滚轮向上按惯例应是放大）。
+  桌面路径用户未反馈问题，故本次**未改动**；若要统一，改滚轮一处的符号即可。
+
+**层叠顺序（不可随意改动）**：`遮罩(7) < 抽屉(9) = 折叠把手(9) = 工具栏(9)`
+
+- ⚠️ **`#app` 必须自己建立层叠上下文**（`position:relative; z-index:0`）。否则页面各浮层
+  各自另立门户，`z-index` 数字**互相之间根本不可比**：抽屉是 `#app` 的子元素（9），
+  工具栏却是 `#stage` 的后代（旧写法 11），11 压不住 9。实测抽屉打开时，面板里的
+  `<h1>3D MousePad Studio` 整片盖在工具栏按钮上，只从按钮缝隙里露出一个「S」。
+  所有层级断言都建立在「以 `#app` 为唯一基准」这个前提上。
+- ⚠️ 抽屉层级要**高于**工具栏（用户明确要的「抽屉盖住悬浮按钮」）：两者同层（9），
+  且 `#toolbar` 在 DOM 里**更靠后**，同层靠后者赢。抽屉打开时工具栏同时 `opacity:0` +
+  `pointer-events:none`，避免半透明按钮压在面板滑条上碍事。
+- ⚠️ 工具栏仍必须高于遮罩：`.seg` / `.dd-btn` 带 `backdrop-filter:blur()`，各自建立层叠上下文
+  并被合成到遮罩之上；工具栏若低于遮罩，抽屉一打开这些按钮就透过遮罩显示成鬼影。
+  现在两者同层（工具栏 9 > 遮罩 7），成立。
+- ⚠️ `#panelHandle` 的收起位移必须正好是 `translateX(-100%)`：把手 `left:var(--panel-w)` +
+  `right:auto`，位移等于抽屉宽时把手恰好落在屏幕 `0..26px`。多减一个把手宽会把它推出屏幕外
+  （实测 `left:-25px`，整只手看不见也点不到）。
+
+**冒烟测试**：`test/smoke-mobile.mjs`（54 项）。这组用例的存在理由 —— 上述问题都**不抛异常**，
+桌面截图看不出来，只能在具体视口下量：工具栏重叠量、画布 `width/height` 属性比 vs CSS 盒子比、
+抽屉开合后的面板盒子位置、参数按钮在工具栏里的**实际排列顺序**、把手在两个状态下的盒位置、
+`touch-action` 与 viewport meta 的实际计算值、双指手势的旋转方向与缩放锚点。
+
+⚠️ 双指手势的用例一律走 CDP `Input.dispatchTouchEvent` 派发**真实多指**，不在页面里合成
+`TouchEvent`：Chromium 能把坐标喂进 `e.touches`，但 WebKit 里 `new Touch()` 直接抛
+`Illegal constructor`，而上线环境正是 WebKit。
+
+⚠️ 量贴图位移时要**先扫出红像素所在的行区间再采样**，不要写死采样行：贴图放大后会收缩，
+固定行可能整行落在贴图之外，读到 `-1`（无红像素），断言会以「位移 0」的形式**假通过**。
+`smoke-mobile` 为此单独加了一条前置断言。
+⚠️ 层级断言用 `elementFromPoint` 判「最顶上元素是否落在 `#panel` 子树内」，而不是比对
+`z-index` 数字、也不要要求最顶上正好是 `#panel`（抽屉里有 `details/summary` 等子元素）。
+
+## 6. 易错点
 
 - `padMesh` 与 `wristGroup` 是两个独立对象，不要混淆
 - `weldCreased()` 之后必须把 `geo.groups` 原样搬进新几何：顶点焊接不会保留 groups，丢了它顶/边两种材质（导出为 `PadTop` / `PadEdge`）会退化成只有顶面一种。三角形顺序不变，故 `start` / `count` 数值照抄即可（焊接前是顶点单位，焊接后是索引单位，数值相同）
@@ -120,10 +221,12 @@
 - 调试前硬刷新（Ctrl+Shift+R），避免用旧版 JS 判定问题
 - 腕托与倒角在所有模式下均显示，不存在「退出编辑才出现」的状态
 
-## 6. 仓库结构
+## 7. 仓库结构
 
 ```
 index.html   主程序（纯前端单文件，Three.js 经 importmap 从 CDN 加载）
+test/        冒烟测试（Playwright + SwiftShader）：smoke-render 渲染交互、smoke-export 导出资源、
+             smoke-mobile 移动端布局与触控；_harness.mjs 为公共装置
 demo/        独立 demo 页，与主工程无代码耦合，仅供方案评估，浏览器直接打开即可
   curvetest.html  曲线算法对比（Catmull-Rom 锚点 vs 真贝塞尔手柄）
   sidetest.html   侧边（边缘）方案对比：五种侧壁生成方案 + 纯色/贴图两种观感，不接腕托
