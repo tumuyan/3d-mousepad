@@ -21,6 +21,10 @@
 | 导出模型 | `exportModel3D('glb'\|'stl'\|'obj')` | 见 §4 导出 |
 | 模型渲染图 | `exportModelPNG()` | 见 §4 导出 |
 | 渲染脏标记 | `markRenderDirty()` / `markShadowDirty()` | 主循环按需渲染，见 §5。前者管画面，后者管阴影贴图 |
+| 参数变更分发 | `applyParam(key, v)` / `applyParamThen(key, v, extra)` | 按 `PARAM_SCHEMA[key].onChange` 决定重建 / 刷材质 / 只置脏，见 §2.5 |
+| 文案 | `T(key, vars)` / `applyI18n()` / `regI18n(el, kind, key)` | 见 §2.5。缺词时 `T()` 返回 key 本身 |
+| 自动草稿 | `scheduleDraft()` / `store.saveDraft()` | 参数变更防抖 600ms 落 localStorage，启动时恢复并跑一遍同步链 |
+| 方案槽位 | `store.saveSlot/loadSlot/deleteSlot/listSlots` | 元数据在 localStorage，参数与贴图在 IndexedDB |
 | LOD 预览 | `enterLOD()` / `commitLOD()` / `ensureFullQuality()` | 交互中用低精度几何，见 §5 |
 | 几何异常兜底 | `guardedRebuild()` / `clampGeoParams()` | `rebuild()` 抛异常时 toast + 回退上一个成功参数。`rebuild()` 返回 `false` = 本次失败，见 §5 |
 | Toast 提示 | `toast(msg, type, ms)` | 所有用户反馈统一走它，**禁止新增 `alert()`** |
@@ -50,6 +54,38 @@
 默认参数下实际成品为 **235.4 × 270.4 × 7 mm**。因此这三个控件的显示名带「基础」前缀（指倒角前的轮廓值），悬停提示写明换算公式。
 做切割线 / 印刷出血时须先明确取「顶面印刷区」还是「外轮廓剪影」——顶面比外廓再内缩 `bevelSize`。
 ⚠️ 不要为了让参数等于成品而改几何，那会让所有已有设计的外观整体缩小。
+
+## 2.5 模块拆分（原生 ES module，零构建）
+
+`index.html` 持有唯一的 `<script type="module">`，其余按职责拆到 `src/`：
+
+| 模块 | 内容 | 能否 import three |
+| --- | --- | --- |
+| `src/util.js` | norm2 / clampNum / 点路径读写 | ❌ |
+| `src/params.js` | `P` 默认值、`PARAM_SCHEMA`（含 `onChange`）、`sanitizeParams` | ❌ |
+| `src/config.js` | ZIP(store) 打包解包、安全文件名、`migrateConfig` | ❌ |
+| `src/textureMath.js` | 裁剪压缩计算、`zoomTexAbout` 反解 | ❌ |
+| `src/anchors.js` | 贝塞尔锚点烘焙 / 平滑 / 校验 | ❌ |
+| `src/footprint.js` | 腕托足迹采样 / 等距外扩 / 去自交 | ❌ |
+| `src/store.js` | localStorage + IndexedDB 持久化 | ✅（只用 Web API） |
+| `src/i18n.js` | 中英词典与语言切换 | ❌ |
+
+> ⚠️ 标 ❌ 的模块**不得 import three**：它们要能在 `npm run unit` 里被 node 直接 import。
+> 一引入 three 就只能走浏览器 + CDN，反馈环从毫秒级退化到分钟级 —— 拆模块的主要收益即此。
+> 需要 `THREE.MathUtils.clamp` 时用 `src/util.js` 的 `clampNum` 代替。
+
+**参数变更分发（不再手写 `P.x = v; rebuild()`）**
+控件回调走 `applyParam(key, v)`：它按 `PARAM_SCHEMA[key].onChange` 决定后续动作
+（`rebuild` / `material` / `render` / `none`）。额外副作用（如改外形要同步分组显隐）
+写在 `applyParamThen(key, v, extra)` 的 `extra` 里。
+⚠️ `rebuild` 与 `material` 不能互换：写反会让每次拖滑条白跑一次全量几何重建。
+
+**文案一律走 i18n**
+界面上不出现硬编码中文。HTML 静态文案用 `data-i18n`（及 `-html` / `-title` / `-aria` /
+`-placeholder` 变体）标记；JS 生成的文案用 `T(key)`，需要切换时重刷的节点经 `regI18n()`
+登记。`data-i18n-html` 只用于含 `<b>/<small>` 的常量文案，**不要**拿它渲染外部数据。
+⚠️ 段落里若嵌着运行时数字（如 `#tfDim`），整段不能进词典 —— 否则切语言会把承载数字的
+`<span>` 一起冲掉。拆成"数字前 / 中 / 后"三段纯文本。
 
 ## 3. 关键代码定位
 
@@ -217,7 +253,8 @@
 
 - `padMesh` 与 `wristGroup` 是两个独立对象，不要混淆
 - `weldCreased()` 之后必须把 `geo.groups` 原样搬进新几何：顶点焊接不会保留 groups，丢了它顶/边两种材质（导出为 `PadTop` / `PadEdge`）会退化成只有顶面一种。三角形顺序不变，故 `start` / `count` 数值照抄即可（焊接前是顶点单位，焊接后是索引单位，数值相同）
-- **新增 UI 参数必须同时登记到 `PARAM_SCHEMA`**，否则导入配置时会被静默丢弃（启动时控制台会 warn 未登记的参数）
+- **新增 UI 参数必须登记三处**：`PARAM_SCHEMA`（导入白名单，缺了会被静默丢弃）、它的 `onChange`（缺了会按最贵的 `rebuild` 处理）、以及形如 `wristTopGap` 这类**几何类滑条**还要给 `slider()` 传 `paramKey`（缺了闸门会退回宽口径）。三处缺任一，启动时控制台都会点名
+  - ⚠️ `SLIDER_PARAM` 已从「中文标签 → 参数名」的反查表改成**参数名清单**：做了 i18n 之后标签会随语言变，按标签反查一换语言就查不到，且失效得很安静（闸门悄悄放宽，越界不再被拦）
 - **几何入口的异常必须走 `guardedRebuild()`，不要在调用点各自包 `try`**：`rebuild()` 是几何的唯一入口，散落各处的 `try` 会漏掉某条路径（滑条 / 锚点 pointermove / 导入配置 / 启动首次重建），漏掉的表现就是"画面不动且毫无提示"
 - ⚠️ 兜底用例**不能只断言"参数回到原值"**：`clampGeoParams()` 单独就能让这类断言变绿，捕获取消了也发现不了。必须同时断言"几何被换回重建前的版本"（越界值真的改变了顶点数，才区分得出"回到了好状态"与"停在坏状态"）
 - ⚠️ 冒烟里造"越界参数"要覆写 `input.value` 的 **getter**（返回常量），覆写 setter 无效（浏览器仍按 min/max 夹紧 getter），且用完必须 `delete` 复原，否则后续读取永远拿到常量
@@ -231,6 +268,11 @@
 - `applyTexParams()` 只在 `wrap` 变化时置 `t.needsUpdate`：`wrapS/wrapT` 是**采样器参数**，必须随纹理重传才生效；而 `center/repeat/offset/rotation` 只进 `texture.matrix`，每帧由 `refreshTransformUniform` 作 uniform 重算，**不需要**重传。把 `needsUpdate` 无条件加回去，会让拖贴图滑条 / 画布拖拽 / 滚轮缩放时每次输入都重传整张图（4096² RGBA 约 64MB/次）
 - 只影响材质、不影响几何的参数**不要 `rebuild()`**：本色与不透明度走 `updateMatBase()`，表面粗糙度走 `updateMatRough()`，边缘颜色走 `updateEdgeColor()`。改这类参数时 `rebuild()` 会白跑 `ExtrudeGeometry` + 腕托球体，还连带 `markShadowDirty()` 重渲深度图
 - `makeTex(url, cb, onFail)`：第三参不可省。`FileReader.readAsDataURL` 对任何文件都成功，真实失败发生在 `<img>` 解码阶段，不走 `onerror`
+- **本地保存的边界**：`store.saveDraft()` 存的是 `snapshotParams(P)` 的**扁平参数快照**，不是 `{ params }` 包装 —— 恢复时按扁平对象读，并照例过一遍 `sanitizeParams()`
+  - ⚠️ 恢复发生在 UI 构建**之后**：不跑一遍 `uiSyncers.forEach()` + `syncTexUI()` 的话，滑条仍显示默认值而画面已经变了（读数与画面对不上）
+  - ⚠️ 贴图恢复走 `makeTex()` 而不是直接 `setTex()`：超尺寸图要能弹出裁剪 / 压缩界面，与"用户手动上传"那条路径保持一致
+  - ⚠️ 存储失败**绝不**影响调参本身：隐私模式 / 配额满都会抛，存不下只是少一个后悔药
+- **切语言是纯 UI 事件**：`applyI18n()` 只改文本，不重建几何、不动参数。任何"切完语言画面变了"都是 bug
 - **超尺寸贴图走 `fixOversizeTexture(url, w, h)` 弹窗裁剪 / 压缩，不直接报错**（`makeTex` 内部接入，上传 / 拖拽 / 导入配置三条入口共用）
   - 返回 Promise：resolve(处理后的 dataURL) / reject(用户取消)；取消用 `err.cancelled` 标记，与「文件损坏」区分 —— 调用方据此只给普通提示（`texLoadFailed`），且导入配置时**不计入失败数**
   - **默认 1:1**：不裁不压就按**原图像素**上传，`tfOutputSize()` 只取裁剪区原尺寸、不乘任何缩放。
@@ -274,17 +316,27 @@
 ## 7. 仓库结构
 
 ```
-index.html   主程序（纯前端单文件，Three.js 经 importmap 从 CDN 加载）
-test/        冒烟测试（Playwright + SwiftShader）：smoke-render 渲染交互、smoke-export 导出资源、
-             smoke-mobile 移动端布局与触控、smoke-texfix 超尺寸贴图处理；
-             `npm run smoke` 串跑四个脚本；_harness.mjs 为公共装置
-             _harness.mjs 为公共装置
+index.html   页面骨架 + 渲染 / 交互 / 导出（Three.js 经 importmap 从 CDN 加载）
+src/         拆出的模块（原生 ES module，零构建），见 §2.5
+test/        回归验证，分两层：
+  unit/      纯函数级（node:test，约 1 秒）：params / config / textureMath /
+             anchors / footprint / i18n；`npm run unit`
+  smoke-*.mjs 浏览器冒烟（Playwright + SwiftShader）：smoke-render 渲染交互、
+             smoke-export 导出资源、smoke-mobile 移动端布局与触控、
+             smoke-texfix 超尺寸贴图处理、smoke-zoomwheel 滚轮方向、
+             smoke-i18n-store 国际化与本地保存；`npm run smoke`
+  _harness.mjs 公共装置（静态服务 + 浏览器启动 + 断言收集）
 demo/        独立 demo 页，与主工程无代码耦合，仅供方案评估，浏览器直接打开即可
   curvetest.html  曲线算法对比（Catmull-Rom 锚点 vs 真贝塞尔手柄）
   sidetest.html   侧边（边缘）方案对比：五种侧壁生成方案 + 纯色/贴图两种观感，不接腕托
 server.js    本地静态服务器：node server.js [默认端口 5213]
 README.md    项目说明与运行方式
-package.json 仅声明 playwright 等调试依赖，运行项目不依赖 npm 包
+package.json 仅声明 playwright 等调试依赖，运行项目不依赖 npm 包；type=module
 Agents.md    本文件
 ```
+
+**先跑快的**：改纯逻辑先写 `test/unit/` 的断言（毫秒级），只有真需要渲染 / 布局 / 手势
+才去动 smoke 脚本。
+⚠️ `_harness.mjs` 里 `locale` 固定为 `zh-CN`：i18n 读 `navigator.language` 定初始语言，
+不锁住的话所有"按中文文案找控件"的断言会集体失效。
 - 调试产物 `snap*.yaml`、`*_diag*`、`*.png`、`server.log` 已在 `.gitignore` 中，不应提交

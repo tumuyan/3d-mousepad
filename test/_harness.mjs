@@ -61,6 +61,10 @@ export async function open(server, { initScript, viewport, hasTouch, isMobile } 
     hasTouch: !!hasTouch,
     isMobile: !!isMobile,
     acceptDownloads: true,
+    // ⚠️ 必须显式给 locale：i18n 会读 navigator.language 决定初始语言，
+    // 而 Playwright 默认给的是 en-US —— 不锁成 zh-CN 的话，所有"按中文文案找控件"
+    // 的断言（hasText: '基础厚度' 之类）会集体找不到行并最终超时。
+    locale: 'zh-CN',
   });
   if (initScript) await ctx.addInitScript(initScript);
   const page = await ctx.newPage();
