@@ -105,6 +105,8 @@ export function reporter(title) {
 
 /* 页面里这些 console.error 是**刻意保留**的排查线索，每条都配了用户可见的 toast
    （断言里已单独验证 toast），不应算作"意外错误"让测试失败。
+   · [几何兜底]：几何入口抛异常时打的那条。冒烟测试正是在**故意**制造这种异常
+     （见 smoke-render.mjs 里 window.__geoFaultOnce 注入的用例），它出现才是测试想要的。
    ⚠️ 新增"故意喂坏输入"的用例时，若页面会打新的 console.error，要同步加进这里。 */
 export const EXPECTED_LOG =
-  /WebGL|SwiftShader|Deprecat|\[导入配置\]|\[贴图加载失败\]|\[读取文件失败\]|\[导出模型\]|\[导出预览图\]|\[导出模型渲染图\]/;
+  /WebGL|SwiftShader|Deprecat|\[导入配置\]|\[贴图加载失败\]|\[读取文件失败\]|\[导出模型\]|\[导出预览图\]|\[导出模型渲染图\]|\[几何兜底\]/;
