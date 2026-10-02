@@ -2818,8 +2818,11 @@ function zoomTexAbout(tp, t, ns, m) {
   tp.oy = THREE.MathUtils.clamp(offV - (1 - ry2) / 2, -1, 1);
 }
 // 以鼠标所在位置为锚点缩放贴图（滚轮）
+// ⚠️ 符号不可取反回 `-e.deltaY`：向上滚（deltaY < 0）必须让 s **变小**（= 贴图放大），
+// 才和双指捏合「张开手指示放大」的约定一致（捏合处是 s0 * d0 / d）。
+// 老写法用 -deltaY，桌面路径上一直是「向上滚 = 缩小」，与捏合正好相反。
 function zoomTexAt(tp, t, e) {
-  zoomTexAbout(tp, t, THREE.MathUtils.clamp(tp.s * Math.exp(-e.deltaY * 0.001), 0.2, 5), uvAtPoint(e));
+  zoomTexAbout(tp, t, THREE.MathUtils.clamp(tp.s * Math.exp(e.deltaY * 0.001), 0.2, 5), uvAtPoint(e));
 }
 canvas.addEventListener('wheel', e => {
   if (dragMode === 'view') return;
