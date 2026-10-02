@@ -2191,6 +2191,171 @@ function ensureFullQuality() {
   rebuild();
 }
 
+/* ---------- 几何入口异常兜底 ----------
+   rebuild() 是几何的唯一入口，而它下面挂着 makeClassicShape() / buildPad() / buildWrist()。
+   这些入口一旦抛异常，从滑条 oninput、锚点 pointermove、导入配置到启动时的首次 rebuild
+   都没有 try 包住 —— 表现是渲染循环继续跑、但几何停在半成品（或压根没建），
+   用户只看到画面不动，且**没有任何提示**，无从反馈。
+
+   这里统一兜住：捕获 → toast 说明是"参数越界"还是"内部错误" → 回退到上一个成功参数
+   → 立刻重建回可用状态，避免卡在坏状态里。
+
+   快照只记"几何参数"（GEO_PARAM_KEYS）：
+     · 不记光照 / 颜色 / 贴图变换 —— 它们不参与几何，回退它们会让提示假报成
+       "刚才那次调光白做了"，也与本次要修的问题无关；
+     · 数值与枚举按值存，classicCtrl 单独 structuredClone 一份。
+       不用 structuredClone 整个 P：P.t1/P.t2 里带着贴图 Blob 与 Image，深拷贝既昂贵
+       又会打断贴图对象与 GPU 纹理的对应关系，而几何入口并不会改写这两个对象。 */
+let geoSnapshot = null;
+let geoGuardActive = false;    // rebuild 正在执行（防止异常恢复里重入 rebuild 造成递归）
+let geoFaulted = false;        // 本次 rebuild 已判失败；后续成功段落不得再恢复快照
+let geoRecovering = false;
+
+// 参与几何构建的参数（= rebuild → makeShape/buildPad/buildWrist 的全部读取面）
+const GEO_PARAM_KEYS = [
+  'shape', 'padW', 'padH', 'corner', 'classicCtrl',
+  'thick', 'bevel',
+  'wristStyle', 'wH', 'wW', 'wD', 'wPos', 'wGap', 'wBW',
+  'wMorph', 'wMorphRot', 'wRot', 'wEgg', 'wJoin', 'wMargin', 'wristTopGap',
+];
+
+// 上界 = 滑条 max 与「schema 上界 + 25% 余量」取较小者。两条边界缺一不可：
+//   · 必须**不小于**滑条 max —— 否则用户一碰滑条就被判越界并弹提示（滑条允许 0~10
+//     而入口夹到 7.5 的写法正是如此）。
+//   · 必须**不大于**schema 上界 —— 滑条 max 与 schema 并非处处一致。实测 wW 滑条 60~260
+//     而 schema 10~500、wPos 滑条 0~120 而 schema 0~300、wD 滑条 40~160 而 schema 5~400，
+//     一律按 schema 放行会让「屏幕上的滑条已经到头、P 却还能更大」变成一条无提示的越界通路。
+//     故这里取较小者，保证入口闸门比 UI 更早收紧。
+// 下界对 0 基参数（thick / corner / bevel / wMargin / wGap / wEgg 等）恒为 0 ——
+// makeClassicShape 里 `wMargin = -1` 是"贴合足迹"的哨兵值，不能被夹成正数。
+const sliderMaxOf = {};
+// 控件标签 → 参数键。闸门要拿滑条上界，而 slider() 只拿得到 label，故需要这张表。
+// ⚠️ 新增几何类滑条时必须同步登记，否则该参数会退回"只按 schema 放行"的宽口径。
+const SLIDER_PARAM = {
+  '基础宽度': 'padW', '基础长度': 'padH', '圆角': 'corner',
+  '基础厚度': 'thick', '边缘倒角': 'bevel',
+  '隆起高度': 'wH', '腕托宽度': 'wW', '腕托旋转°': 'wMorphRot',
+  '单球宽度': 'wBW', '双球旋转°': 'wRot', '鹅蛋度': 'wEgg',
+  '双球过渡弧': 'wJoin', '前后长度': 'wD', '双球间距': 'wGap', '距底边': 'wPos',
+  '腕托顶距': 'wristTopGap', '外形超出腕托': 'wMargin',
+};
+function geoClampOf(key) {
+  const s = PARAM_SCHEMA[key];
+  if (!s || s.t !== 'num') return null;
+  const pad = (s.max - s.min) * 0.25;
+  const hi = sliderMaxOf[key];
+  return {
+    min: s.min > 0 ? Math.max(0, s.min - pad) : s.min,
+    max: hi === undefined ? s.max + pad : Math.min(s.max + pad, hi),
+  };
+}
+// 纯函数：夹紧数值参数，返回被夹过的键名。只在 rebuild 内部调用。
+function clampGeoParams() {
+  const fixed = [];
+  for (const key of GEO_PARAM_KEYS) {
+    const lim = geoClampOf(key);
+    if (!lim) continue;
+    const v = P[key];
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      // NaN / Infinity 连 clamp 都救不回来，直接认作越界（下面由快照或默认值兜底）
+      fixed.push(key);
+      continue;
+    }
+    const c = v < lim.min ? lim.min : (v > lim.max ? lim.max : v);
+    if (c !== v) { P[key] = c; fixed.push(key); }
+  }
+  return fixed;
+}
+
+function captureGeoSnapshot() {
+  const snap = {};
+  for (const k of GEO_PARAM_KEYS) snap[k] = P[k];
+  // classicCtrl 必须**深**拷贝：它是用户可编辑的锚点数组，异常路径常发生在编辑它的过程中
+  // （拖锚点 → rebuild），若快照与 P.classicCtrl 共用同一个数组，回退就等于把坏几何原样恢复。
+  snap.classicCtrl = P.classicCtrl ? structuredClone(P.classicCtrl) : P.classicCtrl;
+  geoSnapshot = snap;
+}
+// 恢复快照。两件事必须分开看：
+//   · 快照里有的键 —— 恢复；快照里没有的键 —— 归位默认值（不能留在越界的当前值上）。
+//   · classicCtrl 用拷贝：异常路径常发生在编辑锚点的过程中，若与 P.classicCtrl 共用
+//     同一个数组，"恢复"就等于把坏几何原样写回去。
+function restoreGeoSnapshot() {
+  for (const k of GEO_PARAM_KEYS) {
+    if (k === 'classicCtrl') continue;
+    P[k] = (k in geoSnapshot) ? geoSnapshot[k] : structuredClone(P_DEFAULTS[k]);
+  }
+  P.classicCtrl = geoSnapshot.classicCtrl ? structuredClone(geoSnapshot.classicCtrl) : null;
+}
+function geoFail(kind, err, brokenKeys) {
+  console.error('[几何兜底]', kind, err);
+  geoFaulted = true;
+  const where = brokenKeys.length ? `参数 ${brokenKeys.slice(0, 4).join('、')}${brokenKeys.length > 4 ? ' 等' : ''} 越界` : '';
+  if (kind === 'fallback') {
+    toast(`几何重建失败：${where ? where + '，' : ''}已回退到上一个可用参数`
+      + `（${err && err.message ? err.message : err}）`, 'err', 6000);
+  } else {
+    toast('几何重建失败，已恢复默认参数：'
+      + `${err && err.message ? err.message : err}${where ? '（' + where + '）' : ''}`, 'err', 6000);
+  }
+}
+
+// ⚠️ 捕获范围必须"窄"：只包住几何重建本身，不含置脏、计时上报、LOD 收尾。
+// 它们出错（或将来长出新的抛错点）不该被误判成"几何参数有问题"而回退用户参数。
+function guardedRebuild(body) {
+  if (geoRecovering) { body(); return true; }   // 恢复途中只做纯重建，不再兜底，避免递归
+  if (geoGuardActive) return true;              // 不可重入：忽略嵌套调用（当前实现没有嵌套，纯防御）
+  geoGuardActive = true;
+  geoFaulted = false;
+  let fixed = [];
+  try {
+    try { fixed = clampGeoParams(); }
+    catch (err) { geoFail('fatal', err, ['参数校验']); return false; }
+    try {
+      body();
+    } catch (err) {
+      // 参数越界 → 回退参数；无参数越界 → 疑为内部错误，快照里没有的键归位默认值
+      if (geoSnapshot) {
+        restoreGeoSnapshot();
+        geoFail(fixed.length ? 'fallback' : 'fatal', err, fixed);
+      } else {
+        for (const k of GEO_PARAM_KEYS) P[k] = structuredClone(P_DEFAULTS[k]);
+        geoFail('fatal', err, fixed);
+      }
+      // 恢复重建：用干净参数再跑一次；参数本身有问题的话这次很可能仍会抛，
+      // 那就继承上一次的坏几何（此时用户已拿到提示，至少不是静默卡死）。
+      geoRecovering = true;
+      try { body(); geoFaulted = false; } catch (err2) { console.error('[几何兜底] 恢复参数后仍失败', err2); }
+      finally { geoRecovering = false; }
+      return false;
+    }
+    if (fixed.length) toast(`已收敛超出范围的几何参数：${fixed.slice(0, 3).join('、')}`
+      + `${fixed.length > 3 ? ' 等' : ''}`, 'err', 4000);
+    captureGeoSnapshot();
+    return true;
+  } finally {
+    geoGuardActive = false;
+  }
+}
+// 冒烟测试用：读取几何参数与兜底状态（只读快照，不做任何写操作，与 window.padGeoInfo 同一约定）
+window.__geoState = () => ({
+  ...Object.fromEntries(GEO_PARAM_KEYS.map(k => [k, k === 'classicCtrl' ? undefined : P[k]])),
+  faulted: geoFaulted,
+  hasSnapshot: !!geoSnapshot,
+});
+
+// 冒烟测试用：把 buildPad 临时换成会抛异常的版本，验证兜底链路真的生效。
+// 只暴露"注入一次故障"这一个动作，不支持读取 / 累积，测试结束由页面刷新自然复原。
+window.__geoFaultOnce = msg => {
+  const orig = buildPad;
+  let fired = false;
+  buildPad = function () {
+    if (fired) return orig.apply(this, arguments);
+    fired = true;
+    buildPad = orig;                    // 自我摘除：恢复重建时用的必须是正常实现
+    throw new Error(msg || '测试注入的几何故障');
+  };
+};
+
 function dbgReset() {
   dbg.n = dbg.total = dbg.max = 0;
   dbg.pad = dbg.wrist = dbg.wristN = dbg.ortho = dbg.orthoN = dbg.padOnly = 0;
@@ -2258,19 +2423,27 @@ window.padGeoInfo = () => {
 // 足迹不读 P.classicCtrl —— 可拖拽锚点只决定上半轮廓。故跳过腕托不会留下陈旧状态。
 // ⚠️ 新增 padOnly 调用点前必须重新核对上述依赖，否则腕托会静默停在错误位置。
 function rebuild(padOnly) {
-  const t0 = tNow();
   if (lodDraft) lodDirty = true;   // P1-3：记下"本次是低精度"，供 commitLOD 判断是否要补重建
-  const topY = buildPad();
-  const t1 = tNow();
-  if (padOnly) dbg.padOnly++; else buildWrist(topY);
-  const t2 = tNow();
+  // 几何重建包在 guardedRebuild() 里：异常时 toast + 回退上一个可用参数，绝不让渲染循环静默停摆。
+  // 计时与上报留在守卫之外 —— 它们出错不该被误判成"几何参数有问题"而回退用户参数。
+  const t0 = tNow();
+  const seg = [0, 0];              // 分段计时出口：buildPad 后、buildWrist 后
+  const built = guardedRebuild(() => {
+    const topY = buildPad();
+    seg[0] = tNow();
+    if (padOnly) dbg.padOnly++; else buildWrist(topY);
+    seg[1] = tNow();
+  });
   markOverlayDirty();              // 几何变了：锚点世界坐标、顶面高度都可能跟着变
   markShadowDirty();                // 几何变了 → 深度图作废（P0-4）
   // 注意：此处**不**重算正交视口。视口只在 fitEditOrtho() 的明确入口更新，
   // 否则拖锚点会因包围盒变化导致画面边拖边缩放（详见 cvCx/cvCy/cvHalf 处的说明）。
   const t3 = tNow();
   markRenderDirty();                // P1-2：几何变了必须重绘
-  if (dbgRebuild) dbgReport(t0, t1, t2, t3);
+  if (dbgRebuild) dbgReport(t0, seg[0], seg[1], t3);
+  // 失败时返回 false：fitEditOrtho() 要据此跳过 —— 几何已是半成品，按它算包围盒会
+  // 把编辑视口缩放到荒谬的尺度。
+  return built;
 }
 
 /* ---------- 高频输入合并：同一帧内只重建一次 ---------- */
@@ -2337,6 +2510,10 @@ function slider(parent, label, min, max, step, get, set, note) {
   if (note) { lb.title = note; row.title = note; }
   const inp = document.createElement('input');
   inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+  // 登记滑条上界，供几何入口的参数闸门（geoClampOf）对齐 —— 两者必须同源，
+  // 否则会出现"滑条到头了 P 仍可越界"或"一碰滑条就被判越界"的双向错位。
+  const paramKey = SLIDER_PARAM[label];
+  if (paramKey) sliderMaxOf[paramKey] = max;
   const val = document.createElement('span'); val.className = 'val'; val.textContent = get();
   // P1-3：oninput 期间进入 LOD（set 回调里的 rebuild 会用低精度几何），
   // 松手（change）时由 commitLOD() 切回全质量重建一次。
@@ -2460,8 +2637,9 @@ texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 
     };
     mkBtn('重置锚点', '把全部锚点恢复为默认轮廓', () => {
       P.classicCtrl = structuredClone(DEFAULT_CLASSIC_CTRL);
-      refreshShapeUI(); rebuild(true);
-      if (curveEdit) { fitEditOrtho(); drawCurveOverlay(); }
+      refreshShapeUI();
+      // rebuild 失败（已 toast + 回退）时不要 fit：按半成品几何算包围盒会把视口缩放到荒谬尺度
+      if (rebuild(true) && curveEdit) { fitEditOrtho(); drawCurveOverlay(); }
     });
     // 视口已与 rebuild 解耦（拖锚点不再自动缩放），
     // 锚点被拖到画面外时需要一个手动 fit 入口把它找回来。
@@ -3046,6 +3224,9 @@ function applyEditOrtho() {
 // 按 makeClassicShape() 的实际包围盒重新 fit 视口：中心对齐几何中心，
 // 纵向半幅取两方向半幅的较大者（保证不裁剪），短边方向由 aspect 反推（可能留白）。
 function fitEditOrtho() {
+  // 几何刚重建失败（正在回退 / 生成的是半成品）时不要重算视口：
+  // 半成品轮廓的包围盒可能整体偏到画面外，NaN 更是会直接污染 orthoCam 的投影矩阵。
+  if (geoFaulted) return;
   let cx = cvCx, cy = cvCy, halfX = 120, halfY = 120;   // 取点失败时沿用旧视口
   try {
     const sh = makeClassicShape();
@@ -3951,9 +4132,11 @@ async function importConfigFile(file) {
       });
     }
   }
-  rebuild();
-  // 导入的锚点可能整体偏离当前视口；此时不在拖拽中，fit 不会造成干扰
-  if (curveEdit) fitEditOrtho();
+  // 导入的锚点可能整体偏离当前视口；此时不在拖拽中，fit 不会造成干扰。
+  // ⚠️ 但配置是外部输入，注入坏参数时 rebuild 可能失败 —— 此时几何是半成品，
+  // 按它算包围盒会把编辑视口缩放到荒谬尺度，故失败就跳过 fit（rebuild 已 toast）。
+  const importOk = rebuild();
+  if (curveEdit && importOk) fitEditOrtho();
   refreshShapeUI();
   if (window.refreshWristUI) window.refreshWristUI();
   uiSyncers.forEach(f => f());

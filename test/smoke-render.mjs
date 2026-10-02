@@ -399,6 +399,117 @@ try {
   ok('导出预览图：画面与导出前一致', Buffer.compare(preExp, postExp) === 0,
     `${preExp.length}B vs ${postExp.length}B`);
 
+  /* ---------- 几何入口异常兜底 ---------- */
+  // 历史：rebuild() 下面挂着 makeClassicShape / buildPad / buildWrist，三者都没有 try。
+  // 一旦抛异常，滑条 oninput、锚点 pointermove、导入配置、启动首次重建这几条路径全部
+  // 直接冒泡 —— 渲染循环本身还在跑，但几何停在半成品，用户只看到"画面不动"且毫无提示。
+  // 这里必须**真的让几何抛一次**：光断言"改一堆参数没崩"证明不了兜底链路存在（改动前也全绿）。
+  // 注入点挂在页面上的 window.__geoFaultOnce()（见 index.html 内的说明）。
+  const toastTexts = () => page.evaluate(() =>
+    [...document.querySelectorAll('#toast-wrap .toast')].map(t => t.textContent));
+  const clearToasts = () => page.evaluate(() => {
+    document.querySelectorAll('#toast-wrap .toast').forEach(t => t.remove());
+  });
+
+  /* 挑参数有两条硬约束，选错了用例会假绿：
+     ① 必须真的进几何 —— 材质 / 光照类参数改了根本不重建，注入的故障没机会触发；
+     ② 必须**只在 classic 模式下可见且生效** ——「基础宽度」在经典款里是派生值
+        （总长由腕托足迹 + 腕托顶距推出，见 padHeight()），改 padW 顶点一个都不变；
+        而它在经典款下又是隐藏行，通用滑条选择器会去操作一个无效控件。
+     故这里用「前后长度」(wD)：经典款 / 全款式都生效，且默认可见（腕托 style=full 或 balls）。
+     越界值也刻意选成"会被滑条夹回去"的量级，好让"回退到抛出前的值"与"被夹到边界值"
+     能区分开（前者回到 89，后者只会落在 160 上）。 */
+  const wdInput = label => page.evaluate(label => {
+    const c = [...document.querySelectorAll('#panel .row')]
+      .find(r => r.querySelector('label')?.textContent === label);
+    const inp = c.querySelector('input[type=range]');
+    return { value: Number(inp.value), min: Number(inp.min), max: Number(inp.max) };
+  }, label);
+  /* 用 defineProperty 绕过 range 自身的夹紧，模拟"P 里真的存了越界值"。
+     ⚠️ 覆写的是 value 的 **getter**（返回常量）而不是 setter —— 覆写 setter 时浏览器
+     仍会按 min/max 夹紧 getter 的返回值，根本造不出越界。用完必须删掉这个属性，
+     否则后续读取永远拿到那个常量，断言会在两个位置同时失真：
+     "回退到上一个可用参数"读到常量而误判失败、"后续操作仍能响应"反而误判通过。 */
+  const setOver = (label, v) => page.evaluate(({ label, v }) => {
+    const c = [...document.querySelectorAll('#panel .row')]
+      .find(r => r.querySelector('label')?.textContent === label);
+    const inp = c.querySelector('input[type=range]');
+    Object.defineProperty(inp, 'value', { get: () => String(v), configurable: true });
+    try {
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+    } finally {
+      delete inp.value;   // 复原为原型上的原生访问器
+    }
+  }, { label, v });
+
+  await clearToasts();
+  const wd = await wdInput('前后长度');
+  const vertsBefore = (await padInfo()).verts;
+  await page.evaluate(() => window.__geoFaultOnce('测试注入的几何故障'));
+  await setOver('前后长度', wd.max + 100);   // 越出滑条上限：回退后必须落回合法区间内
+  await page.waitForTimeout(600);
+  const injected = await toastTexts();
+  ok('几何兜底：几何入口抛异常时给出 toast 提示（不再静默）',
+    injected.some(t => t.includes('几何重建失败')), injected.join(' || '));
+  ok('几何兜底：提示里带上了具体原因（便于用户反馈）',
+    injected.some(t => t.includes('测试注入的几何故障')), injected.join(' || '));
+  const wdAfter = await wdInput('前后长度');
+  const vertsAfter = (await padInfo()).verts;
+  // 两条断言必须同时成立，各挡一种"假修复"：
+  //   · 只看参数 —— 参数闸门（clampGeoParams）单独就能让这条变绿，捕获取消了也发现不了；
+  //   · 只看几何 —— 会退化成"任何成功重建都通过"，没变化也过。
+  // 合起来才唯一指向"回退到上一个可用参数、且坏几何被换成了好几何"。
+  ok('几何兜底：参数回退到抛出前的值（越界值没有留在 P 里）',
+    Math.abs(wdAfter.value - wd.value) < 1e-6,
+    `抛出前 ${wd.value}，越界写入 ${wd.max + 100}，回退后 ${wdAfter.value}（合法区间 ${wd.min}~${wd.max}）`);
+  // 越界值 260 会真的改变几何（顶点数 7704 → 7974）。若兜底链路断了，P 里留着 260、
+  // 几何也停在按 260 生成的那份 —— 必须能区分"回到了抛出前的状态"与"停在了坏状态"。
+  ok('几何兜底：画面继续可用（几何被换回重建前的完整版本，而不是停在半成品）',
+    vertsAfter === vertsBefore,
+    `${vertsBefore} -> ${vertsAfter}`);
+
+  /* 注入后应用必须还能正常响应下一次操作（"卡死"的反例） */
+  await clearToasts();
+  const vertsFrozen = (await padInfo()).verts;
+  await setOver('前后长度', wdAfter.value < wd.max - 40 ? wdAfter.value + 40 : wdAfter.value - 40);
+  await page.waitForTimeout(600);
+  const recovered = await padInfo();
+  ok('几何兜底：注入畸形故障后应用仍能响应后续操作（不卡死）',
+    recovered.verts !== vertsFrozen,
+    `${vertsFrozen} -> ${recovered.verts} 顶点`);
+  const rebound = await toastTexts();
+  ok('几何兜底：故障恢复后不再刷错误提示', !rebound.some(t => t.includes('几何重建失败')),
+    rebound.join(' || '));
+  await setOver('前后长度', wd.value);
+  await page.waitForTimeout(400);
+
+  /* ---------- 滑条越界：参数二次收敛而不是崩掉 ---------- */
+  // 滑条自身有 min/max，但"导入配置 → 值落在套表边界内 → 用户再往极端拖"这类组合
+  // 在几何入口处没有第二道闸。这里直接把 input.value 写到范围外 ——
+  // 浏览器对 range 会立刻夹回 min/max，故用 defineProperty 绕过，模拟"值真的越界"。
+  // ⚠️ 必须确认"没有收敛"时这条用例真的会 FAIL：用「基础厚度」(0~10，不影响顶点数)
+  // 写的话，越界值与收敛值都落在乐观区间内，断言恒真 —— 那是假绿。
+  await clearToasts();
+  const vertsForClamp = (await padInfo()).verts;
+  await setOver('前后长度', 999);
+  await page.waitForTimeout(600);
+  const clamped = await page.evaluate(() => window.__geoState().wD);
+  // 999 被入口夹到 160（滑条上界）；没有这道闸就会原样进几何，画出畸形模型
+  ok('滑条越界：几何入口二次收敛到合法范围（而不是画出畸形模型）',
+    Number.isFinite(clamped) && clamped > 0 && clamped < 400, `P.wD=${clamped}`);
+  const clampToast = await toastTexts();
+  ok('滑条越界：收敛时给出提示', clampToast.some(t => t.includes('已收敛超出范围')), clampToast.join(' || '));
+  // 收敛后几何应当仍是"完整可渲染"的：不能因为参数被夹就崩掉或半成品
+  const clampGeo = await padInfo();
+  ok('滑条越界：收敛后几何仍完整可渲染（顶点数正常、材质分组完好）',
+    clampGeo && clampGeo.verts > 0 && clampGeo.groups === 2 && clampGeo.indexed,
+    JSON.stringify(clampGeo));
+  await setOver('前后长度', wd.value);
+  await page.waitForTimeout(400);
+  ok('滑条越界用例已还原参数', (await padInfo()).verts === vertsForClamp,
+    `${vertsForClamp} -> ${(await padInfo()).verts}`);
+
   /* ---------- 配置导入校验 ---------- */
   const importCfg = async (obj, name) => {
     await page.evaluate(async ({ obj, name }) => {

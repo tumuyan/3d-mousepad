@@ -22,6 +22,7 @@
 | 模型渲染图 | `exportModelPNG()` | 见 §4 导出 |
 | 渲染脏标记 | `markRenderDirty()` / `markShadowDirty()` | 主循环按需渲染，见 §5。前者管画面，后者管阴影贴图 |
 | LOD 预览 | `enterLOD()` / `commitLOD()` / `ensureFullQuality()` | 交互中用低精度几何，见 §5 |
+| 几何异常兜底 | `guardedRebuild()` / `clampGeoParams()` | `rebuild()` 抛异常时 toast + 回退上一个成功参数。`rebuild()` 返回 `false` = 本次失败，见 §5 |
 | Toast 提示 | `toast(msg, type, ms)` | 所有用户反馈统一走它，**禁止新增 `alert()`** |
 | 工具栏 | `#toolbar` | 唯一的顶部工具栏：左组 `.tb-left`（导出/配置）+ 右组 `.tb-right`（模式/视角）。**不要**再新增第二个绝对定位的工具栏 |
 | 参数面板 / 抽屉 | `#panel` | 宽屏常驻左栏；窄屏（≤900px）变覆盖式抽屉，由 `body.panel-open` 切换 |
@@ -58,7 +59,11 @@
 - `weldCreased(geo, deg)`（`buildPad()` 内，方案 A）：`ExtrudeGeometry` 是非索引几何 → `computeVertexNormals()` 只能得逐面法线、倒角呈平面带。本函数一次完成「焊接成索引几何 + 按折痕角聚类平滑法线」。⚠️ 只改法线与索引，**位置一个字节都不动**（外廓/厚度/包围盒/阴影不变）
 - `wristFootprint(kind, opts)`：采样腕托足迹（右→左）。⚠️ 变换链必须与 3D 逐字一致：**单位球 → 变形 → 缩放 → 绕 y 旋转**，`noRot=true` 忽略旋转角
 - `buildFootprint(out, noRot)`：`makeClassicShape()` 调两次 —— `false` 出真实轮廓，`true` 出旋转无关的布局基准（垫身总长 + 腕托 z 基准）
-- `rebuild(padOnly)`：`padOnly` 仅在改动只影响 `P.classicCtrl` 时使用（足迹不读锚点，故可跳过腕托）。新增 `padOnly` 调用点前须重新核对依赖
+- `rebuild(padOnly)`：`padOnly` 仅在改动只影响 `P.classicCtrl` 时使用（足迹不读锚点，故可跳过腕托）。新增 `padOnly` 调用点前须重新核对依赖。**返回值 `false` 表示本次重建失败（已 toast + 参数回退）**，调用方若还要做几何相关的后续动作（如 `fitEditOrtho()`）必须先看它 —— 按半成品几何算包围盒会把编辑视口缩放到荒谬尺度
+- `guardedRebuild(body)` / `clampGeoParams()` / `captureGeoSnapshot()`：几何入口的异常兜底与参数闸门。`rebuild()` 内部的几何段（`buildPad` + `buildWrist`）包在 `guardedRebuild()` 里，异常时 toast + 回退到上一个成功参数并立刻重建回可用状态。`GEO_PARAM_KEYS` 是"参与几何的参数"的唯一清单，`captureGeoSnapshot()` 只记它
+  - ⚠️ 上界取「滑条 max」与「`PARAM_SCHEMA` 上界 + 25% 余量」的**较小者**。两者不可偏废：只按 schema 放行会让"滑条到头了 P 仍能更大"成为无提示的越界通路（实测 `wW` 滑条 60~260 / schema 10~500，`wD` 滑条 40~160 / schema 5~400 都不一致）；只按滑条则 `PARAM_SCHEMA` 形同虚设。新增几何类滑条时必须登记到 `SLIDER_PARAM`，否则该参数退回宽口径
+  - ⚠️ 下界对 0 基参数恒为 0：`makeClassicShape()` 里 `wMargin = -1` 是"贴合足迹"的哨兵值，夹成正数会改变默认外形
+  - ⚠️ `classicCtrl` 必须**深拷贝**进快照：异常路径常发生在编辑锚点的过程中（拖锚点 → `rebuild`），共用数组会让"回退"把坏几何原样写回去
 
 **锚点（经典形状）**
 - `P.classicCtrl`：`[{ x, y, h1:{x,y}, h2:{x,y}, pin?:true }]`，首尾 `pin` 为接缝点。**运行时一律用顶层 `{x,y,h1,h2}`**；`{p:{x,y}}` 是旧版导出格式，仅导入时兼容
@@ -73,6 +78,8 @@
 - `enterLOD()` / `commitLOD()` / `ensureFullQuality()`：交互中用低精度几何（`curveSegments 24`、球 `32×24`、`bevelSegments 2`），松手后全质量重建。⚠️ 导出与配置保存前必须 `ensureFullQuality()`，否则成品是低精度版本
 - `LOD.full.bevelSegments = 8`（原 5）：焊接后顶点数只有非索引的 ~1/5，故段数上调。**段数不影响外廓与总厚**（最外环恒在 `bs = bevelSize` 处，与段数无关），只影响倒角弧面的高光连续性；想压导出体积可下调（STL 按三角收费）
 - `window.padGeoInfo()` / `window.setDbgRebuild(v)`：供调试与冒烟脚本读取的**外部口子**（垫身几何概要 / rebuild 耗时开关）。⚠️ 冒烟脚本依赖 `padGeoInfo` 的返回字段（`indexed` / `groups` / `verts` / `uniquePos`），改字段名或删除会让 4 条方案 A 断言同时失败
+- `window.__geoState()` / `window.__geoFaultOnce(msg)`：几何兜底的测试口子（只读参数快照 / 注入一次性 `buildPad` 故障）。
+  ⚠️ 兜底链路**只能靠真抛一次异常**来验证 —— 光断言"改一堆参数没崩"证明不了它存在（改之前也全绿）。
 - `wristRough()`：腕托粗糙度（`min(1, P.rough + 0.1)`）的**唯一定义**。`buildWrist()` 与 `updateMatRough()` 必须都调它 —— 写死两份的话，调公式极易只改一处，表现为「拖滑条一个值、重建后跳到另一个值」，不报错
 - 粗糙度分布：顶面 = `P.rough`，腕托 = `wristRough()`，**边缘固定 `EDGE_ROUGH`（0.85）、不随 `P.rough` 变化**。`updateMatRough()` 刻意不带 `edgeMat`：非 `edgeSame` 时边缘恒 0.85，是 `edgeSame` 时它本就是 `padTopMat`。已实测确认（GLB 材质读数 + 与 rebuild 路径截图逐字节相同）
 - `updateMatBase()` / `updateMatRough()` / `updateEdgeColor()` / `updateCutout()`：**纯材质更新路径**，只写 uniform / color，不碰几何、不重建。分别服务：本色与不透明度、表面粗糙、边缘颜色、重复模式（`uCutout`）。四者都只 `markRenderDirty()`，不 `markShadowDirty()`
@@ -208,9 +215,13 @@
 - `padMesh` 与 `wristGroup` 是两个独立对象，不要混淆
 - `weldCreased()` 之后必须把 `geo.groups` 原样搬进新几何：顶点焊接不会保留 groups，丢了它顶/边两种材质（导出为 `PadTop` / `PadEdge`）会退化成只有顶面一种。三角形顺序不变，故 `start` / `count` 数值照抄即可（焊接前是顶点单位，焊接后是索引单位，数值相同）
 - **新增 UI 参数必须同时登记到 `PARAM_SCHEMA`**，否则导入配置时会被静默丢弃（启动时控制台会 warn 未登记的参数）
+- **几何入口的异常必须走 `guardedRebuild()`，不要在调用点各自包 `try`**：`rebuild()` 是几何的唯一入口，散落各处的 `try` 会漏掉某条路径（滑条 / 锚点 pointermove / 导入配置 / 启动首次重建），漏掉的表现就是"画面不动且毫无提示"
+- ⚠️ 兜底用例**不能只断言"参数回到原值"**：`clampGeoParams()` 单独就能让这类断言变绿，捕获取消了也发现不了。必须同时断言"几何被换回重建前的版本"（越界值真的改变了顶点数，才区分得出"回到了好状态"与"停在坏状态"）
+- ⚠️ 冒烟里造"越界参数"要覆写 `input.value` 的 **getter**（返回常量），覆写 setter 无效（浏览器仍按 min/max 夹紧 getter），且用完必须 `delete` 复原，否则后续读取永远拿到常量
 - 导出函数（`exportPNG` / `exportModelPNG` / `exportModel3D`）改动渲染器状态时，新代码**必须放进 `try` 块**并由 `finally` 恢复：写在 try 之前的异常不会触发 finally，会让预览永久走形
 - 足迹变换**先缩放后旋转**，不可颠倒（3D 局部矩阵是 `T·R·S`）；垫身总长与腕托位置只能取**未旋转**基准 `buildFootprint(_, true)`，否则旋转会带着垫身拉长、腕托平移
 - 导入配置的完整同步链：解析 + `cfg.type` 校验 → `sanitizeParams()` 校验 → `resetTexSlot(1/2)` 清空贴图 → `rebuild()` + `refreshShapeUI()` + `refreshWristUI()` + `uiSyncers.forEach()` + `syncTexUI('t1'/'t2')` + `refreshTextures()`
+  - ⚠️ `rebuild()` 失败（配置是外部输入，可能注入坏参数）时不要调 `fitEditOrtho()`：按半成品几何算包围盒会把编辑视口缩放到荒谬尺度
   - ⚠️ 清空贴图必须在 `cfg.type` 校验**之后**：否则误选一个普通 JSON 会先清空再报"格式不正确"，把用户已有贴图白白删掉
   - ⚠️ 清空必须**同步**发生在 ZIP 贴图异步回调之前，否则会把刚导入的贴图删掉（竞态）
   - ⚠️ 贴图解码是异步的，成败只能在 `makeTex` 回调里统计；不要在同步流程末尾判断失败数（回调还没跑，恒为 0）
