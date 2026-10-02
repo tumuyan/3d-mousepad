@@ -28,6 +28,8 @@
 | 参数按钮 | `#panelToggle` / `setPanelOpen(on)` | 仅窄屏可见。**就是工具栏左组里的一个普通按钮**（在「配置」左边），不是浮层。文案由 CSS 按 `body.panel-open` 切换，不在 JS 里写 |
 | 折叠把手 | `#panelHandle` / `togglePanel()` | 仅窄屏可见，贴在抽屉右缘：收起时停在屏幕左缘当拉手，展开时跟到抽屉右缘当收手。**必须是 `#panel` 的兄弟节点**（`#panel` 有 `overflow-y:auto`，子元素放进去会被裁掉） |
 | 遮罩 | `#panelScrim` | 抽屉打开时铺满视口，点它收起。**层级低于抽屉**，见 §5 |
+| 超尺寸贴图处理弹窗 | `#texFix` / `fixOversizeTexture()` / `tf*` | 贴图任一边超过 `MAX_TEX_EDGE` 时弹出的裁剪 + 压缩界面，见 §3「贴图」 |
+| 长边裁剪滑条 | `#tfSize` / `tfEdgeValue()` / `tfFinalSize()` | 只把**输出**按长边等比压小，量程 `[1, 原图长边]`，最右端 = 不压缩。放大不是它的职责 |
 | 手势锚点 | `pinch.m0` / `pinch.p0` | 双指起始中点下的垫面位置（`m0` 是 uv，`p0` 是世界坐标）。缩放全程围绕它，见 §5 |
 | 锚点缩放 | `zoomTexAbout(tp, t, ns, m)` | **以垫面某点为锚点改缩放**的唯一实现：反解 `ox/oy` 使该点下的贴图像素不动。滚轮与双指捏合都走它 |
 | 屏幕 ↔ 垫面映射 | `uvAtPoint(e)` / `clientToTopPlane(x, y)` | 前者给 uv，后者给世界坐标，投影平面都是垫面顶面。手势漂移量必须在这对函数间换算 |
@@ -215,6 +217,40 @@
 - `applyTexParams()` 只在 `wrap` 变化时置 `t.needsUpdate`：`wrapS/wrapT` 是**采样器参数**，必须随纹理重传才生效；而 `center/repeat/offset/rotation` 只进 `texture.matrix`，每帧由 `refreshTransformUniform` 作 uniform 重算，**不需要**重传。把 `needsUpdate` 无条件加回去，会让拖贴图滑条 / 画布拖拽 / 滚轮缩放时每次输入都重传整张图（4096² RGBA 约 64MB/次）
 - 只影响材质、不影响几何的参数**不要 `rebuild()`**：本色与不透明度走 `updateMatBase()`，表面粗糙度走 `updateMatRough()`，边缘颜色走 `updateEdgeColor()`。改这类参数时 `rebuild()` 会白跑 `ExtrudeGeometry` + 腕托球体，还连带 `markShadowDirty()` 重渲深度图
 - `makeTex(url, cb, onFail)`：第三参不可省。`FileReader.readAsDataURL` 对任何文件都成功，真实失败发生在 `<img>` 解码阶段，不走 `onerror`
+- **超尺寸贴图走 `fixOversizeTexture(url, w, h)` 弹窗裁剪 / 压缩，不直接报错**（`makeTex` 内部接入，上传 / 拖拽 / 导入配置三条入口共用）
+  - 返回 Promise：resolve(处理后的 dataURL) / reject(用户取消)；取消用 `err.cancelled` 标记，与「文件损坏」区分 —— 调用方据此只给普通提示（`texLoadFailed`），且导入配置时**不计入失败数**
+  - **默认 1:1**：不裁不压就按**原图像素**上传，`tfOutputSize()` 只取裁剪区原尺寸、不乘任何缩放。
+    旧实现在打开弹窗那一刻就无条件缩到上限边长，用户裁剪框空着也会静默掉一半分辨率
+  - **裁剪框决定输出**：「裁多大就出多大」。上限只是**软上限** —— 超了不禁用「应用」，
+    只在读数里标红 + 写明"会压缩到上限以内"；真正压缩发生在应用那一步（`tfScale()`），
+    保证交给 WebGL 的贴图一定合规（导入配置内嵌贴图等入口也走这里）
+  - **长边裁剪滑条单向**：`tfScale()` 只缩不放，往回拉**不会**放大（放大 = 空白像素凭空插值），
+    撤销压缩走「1 : 1」按钮（`#tfOrig`），那是唯一的回退出口
+  - ⚠️ **滑条刻度（`tf.edge`）是独立状态，绝不写回 `tf.crop`**。旧实现把压缩写回裁剪框，两个后果：
+    ①「裁剪」与「压缩」两段读数永远是同一个数（实测 3000×3000 被滑条压成 1024），分段读数白分；
+    ② 裁剪框被压小后不可逆，再经滑条回显就成了"往下拉反而变大"的死循环。
+    隔离之后两条都自然消失，也不再需要"反推裁剪区"那套把戏
+  - 滑条量程 `[1, 原图长边]`。上界**必须**取长边、**不能**取短边：取短边时"1:1"变成一整块
+    够不着的死区（3360×4800 的短边 3360 仍超上限，拉到最右也回不到原图）。
+    下界**必须**是 1：`min` 属性会被浏览器强制生效，写 4096 的话拖到 1024 会被夹回 4096，滑条成摆设（实测）
+  - 读数**分段**：`原图 W × H px`〔→ `裁剪 W × H px`〕〔→ `压缩 W × H px`〕+ 体积量级。
+    "裁剪"段取 `tfCropSize()`（裁剪框原像素）、"压缩"段取 `tfFinalSize()`（真正交给 WebGL 的尺寸），
+    每段只在**确实变小**时才出现 —— 没裁就没有"裁剪"段，没压就没有"压缩"段，
+    用户一眼看出是哪一步动了尺寸。三段式是"两段式 + 二选一句尾提示"的替代品：
+    旧写法在本弹窗的常见状态（未裁未压但超限）下，只能把"与原图一致"和"会被自动压缩"挤进同一句
+  - ⚠️ 读数标红（`.bad`）看的是**裁剪尺寸**是否超限，不是最终尺寸 —— 最终尺寸被软上限兜底过、
+    永远合规，拿它判就再也标不红（实测）
+  - `#tfFull`（全选）= 尽可能大；锁着比例时给的是**内接**矩形（3360×4800 锁 1:1 → 3360×3360），
+    否则点一下全选就跳出个不满足比例的大框，锁比例等于摆设
+  - 状态分两层，勿混：`tf.crop` 是**图片像素坐标**下的裁剪矩形（唯一事实来源），显示层 canvas 按 contain 缩放、裁剪框用 CSS 百分比画在上面；拖拽只在显示坐标量增量再乘 `imgW/dispW` 换回像素
+  - ⚠️ 打开弹窗要**先加 `.on` 再量尺寸**：`display:none` 时 `.tf-stage` 的 rect 全为 0，据此算出的显示矩形会把裁剪框压成 2px
+  - ⚠️ canvas 的 contain 摆放要内缩 `TF_HANDLE_R`：八个圆形手柄骑在框线上，全选时手柄正压在 `.tf-stage` 边界被 `overflow:hidden` 裁掉一半，`elementFromPoint` 命中框外 → 手柄点不中、拖不动
+  - ⚠️ 锁比例时 `tfClampCrop()` 不能对 w / h 各自独立夹取：一边先撞到图片边界就会被夹成不同比例（实测 1:1 变 0.84），必须等比缩到装得下
+  - ⚠️ 压缩回调里改 `tf.crop` **不要**走 `tfClampCrop()`：裁剪区一旦超出图内会被它夹回去，
+    于是"往下拉反而变大"，再经滑条回显就成了死循环。压缩是等比缩小，落了点也不会出图 —— 不必夹
+  - `window.tfState()` 是给冒烟脚本读弹窗内部状态的**只读快照口子**（`crop` / `view` / `imgW/imgH`），
+    与 `window.padGeoInfo()` 同一约定：只暴露读，不要在里做写操作
+  - 预览图取 `t.image.src` 而非入口 url（`dzPreviewSrc()`）：被裁 / 压过的图要用处理后的那张，否则预览显示的是用户没打算要的原图
 - `texControls(el, key, title)` 只存参数名、内部经 `P[key]` 动态取值：**不要在闭包里捕获 `P.t1` / `P.t2` 对象**。导入配置会整体换掉这两个对象，捕获旧引用的控件会写进游离对象（拖动有反应、UI 读数也对，但画面永远不变且不报错）
 - `makeTex(url, cb)` 第二参是加载回调；`setDZPreview(dz, ...)` 第一参必须是 DOM 元素
 - `📋` 粘贴按钮（`.paste-btn`）是 dropzone 的**兄弟节点**，不能放进 dropzone 内部（`innerHTML` 重写会删掉它）；不要加 `.btn` 类
@@ -226,7 +262,9 @@
 ```
 index.html   主程序（纯前端单文件，Three.js 经 importmap 从 CDN 加载）
 test/        冒烟测试（Playwright + SwiftShader）：smoke-render 渲染交互、smoke-export 导出资源、
-             smoke-mobile 移动端布局与触控；_harness.mjs 为公共装置
+             smoke-mobile 移动端布局与触控、smoke-texfix 超尺寸贴图处理；
+             `npm run smoke` 串跑四个脚本；_harness.mjs 为公共装置
+             _harness.mjs 为公共装置
 demo/        独立 demo 页，与主工程无代码耦合，仅供方案评估，浏览器直接打开即可
   curvetest.html  曲线算法对比（Catmull-Rom 锚点 vs 真贝塞尔手柄）
   sidetest.html   侧边（边缘）方案对比：五种侧壁生成方案 + 纯色/贴图两种观感，不接腕托

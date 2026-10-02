@@ -369,6 +369,70 @@
   #about a { color:#7fb0ff; text-decoration:none; word-break:break-all; }
   #about a:hover { text-decoration:underline; }
 
+  /* ---------- 超尺寸贴图处理弹窗 ---------- */
+  /* 贴图超过 MAX_TEX_EDGE 时不再直接报错，而是弹出本弹窗让用户裁剪 / 压缩。
+     层级 20：高于工具栏(9)与遮罩(7)——它是阻塞式流程，必须盖住一切。
+     注意 #app 的层叠上下文（见 #app 处注释）只约束其子元素；本弹窗挂在 body 下，
+     与 #toast-wrap 同级，故这里用绝对值 20 即可，不受 #app 内层级影响。 */
+  #texFix {
+    display:none; position:fixed; inset:0; z-index:20;
+    background:#000b; align-items:center; justify-content:center; padding:16px;
+  }
+  #texFix.on { display:flex; }
+  .tf-box {
+    width:min(680px, calc(100vw - 24px)); max-height:calc(100dvh - 32px);
+    display:flex; flex-direction:column;
+    background:#22252d; border:1px solid #3a3d47; border-radius:14px;
+    box-shadow:0 20px 60px #000c; overflow:hidden;
+  }
+  .tf-head { padding:14px 16px 10px; border-bottom:1px solid #2c2f38; }
+  .tf-head h2 { margin:0 0 6px; font-size:15px; color:#ffb9d6; font-weight:600; }
+  .tf-head p { margin:0; font-size:12px; color:#a6aab8; line-height:1.6; }
+  .tf-head .tf-dim { color:#ff9db8; font-variant-numeric:tabular-nums; }
+  .tf-body { padding:12px 16px; overflow-y:auto; }
+  /* 裁剪：外层是显示框，内层 canvas 按「适合」等比缩放，裁剪框用 CSS 百分比定位，
+     故拖拽换算只需在显示坐标里做，与图片真实像素解耦。 */
+  .tf-stage {
+    position:relative; width:100%; height:min(46vh, 340px);
+    background:#14161b; border-radius:10px; overflow:hidden;
+    touch-action:none; user-select:none; -webkit-user-select:none; cursor:crosshair;
+  }
+  .tf-stage canvas { position:absolute; left:0; top:0; width:100%; height:100%; display:block; }
+  .tf-crop {
+    position:absolute; box-sizing:border-box; border:1px solid #ff7eb6;
+    box-shadow:0 0 0 9999px #0000008c; cursor:move;
+  }
+  .tf-crop .tf-h {
+    position:absolute; width:16px; height:16px; margin:-8px 0 0 -8px;
+    background:#ff7eb6; border-radius:50%;
+  }
+  /* 八个手柄：四角 + 四边中点。用 data-dir 定位，避免 8 条规则各写一份坐标。 */
+  .tf-crop .tf-h[data-dir=nw] { left:0;    top:0;    }
+  .tf-crop .tf-h[data-dir=n]  { left:50%;  top:0;    }
+  .tf-crop .tf-h[data-dir=ne] { left:100%; top:0;    }
+  .tf-crop .tf-h[data-dir=e]  { left:100%; top:50%;  }
+  .tf-crop .tf-h[data-dir=se] { left:100%; top:100%; }
+  .tf-crop .tf-h[data-dir=s]  { left:50%;  top:100%; }
+  .tf-crop .tf-h[data-dir=sw] { left:0;    top:100%; }
+  .tf-crop .tf-h[data-dir=w]  { left:0;    top:50%;  }
+  .tf-cts { margin-top:10px; }
+  .tf-cts .row label { flex:0 0 88px; }
+  /* 图内短提示：解释「裁剪越大、输出越大」，可用输出分辨率那行看效果 */
+  .tf-hint { margin-top:8px; font-size:11px; color:#7d8194; line-height:1.6; }
+  .tf-out { margin-top:6px; font-size:12px; color:#8b8fa0; line-height:1.7; }
+  .tf-out b { color:#cfd2dc; font-variant-numeric:tabular-nums; }
+  /* 超出上限不再禁用「应用」，只是把数字标红，让用户带着预期做取舍 */
+  .tf-out.bad b { color:#ffb26b; }
+  .tf-out.done { color:#7fd3a0; }
+  .tf-out.done b { color:#a9e8c3; }
+  .tf-foot {
+    display:flex; gap:8px; padding:12px 16px 14px; border-top:1px solid #2c2f38;
+  }
+  .tf-foot .btn { margin:0; width:auto; flex:1; }
+  @media (pointer: coarse) {
+    .tf-crop .tf-h { width:24px; height:24px; margin:-12px 0 0 -12px; }
+  }
+
 </style>
 <script type="importmap">
 {
@@ -823,32 +887,47 @@ let tex1 = null, tex2 = null;
 const maxAniso = renderer.capabilities.getMaxAnisotropy();
 const texLoader = new THREE.TextureLoader();
 
-// 单张贴图解码后的最大边长。超过则拒绝：WebGL 纹理上限通常为 4096~16384，
-// 且超大图会显著拖慢 rebuild 与导出。导出侧 GLTFExporter 另有限 maxTextureSize: 4096。
+// 单张贴图解码后的最大边长。超过则走交互式裁剪 / 压缩（见 fixOversizeTexture）：
+// WebGL 纹理上限通常为 4096~16384，且超大图会显著拖慢 rebuild 与导出。
+// 导出侧 GLTFExporter 另有限 maxTextureSize: 4096，故这里也必须压到同一上限内。
 const MAX_TEX_EDGE = 4096;
 // P0-2：onError 不可省略。FileReader.readAsDataURL 对任何文件都会成功（DataURL 一定生成），
 // 真正的失败发生在 <img> 内部的**解码**阶段，不走 FileReader.onerror。
 // 少了 onError，坏文件 / 损坏 ZIP / deflate 条目都会静默失败，用户仍看到"导入成功"。
+//
+// 超尺寸不在这里处理：`<img>` 解码成功后先量尺寸，超限就交给 fixOversizeTexture()
+// 弹出裁剪 / 压缩界面，用户确认后拿回一张合规的新图再走同一个回调。
+// 这样「贴图已应用」的语义对所有入口保持一致 —— 上传、拖拽、导入配置共用本函数。
 function makeTex(url, cb, onFail) {
   const fail = err => {
     console.error('[贴图加载失败]', err);
     if (onFail) onFail(err);
     else toast('贴图加载失败：' + ((err && err.message) || '文件可能已损坏或不是受支持的图片格式'), 'err');
   };
-  texLoader.load(
-    url,
+  const load = u => texLoader.load(
+    u,
     t => {
-      // 超大图会显著拖慢 rebuild 与导出，且可能直接超出 WebGL 纹理上限 → 拒绝使用
-      const w = t.image && t.image.width, h = t.image && t.image.height;
-      if (w > MAX_TEX_EDGE || h > MAX_TEX_EDGE) {
-        t.dispose();
-        fail(new Error(`图片尺寸 ${w}×${h} 超过上限 ${MAX_TEX_EDGE}×${MAX_TEX_EDGE}`));
-        return;
-      }
       t.colorSpace = THREE.SRGBColorSpace;
       t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
       t.anisotropy = maxAniso;
       cb(t);
+    },
+    undefined,
+    fail
+  );
+  texLoader.load(
+    url,
+    t => {
+      const w = t.image && t.image.width, h = t.image && t.image.height;
+      // 先释放这张探针纹理：超限时它会一直占着显存直到用户操作完成
+      t.dispose();
+      if (w <= MAX_TEX_EDGE && h <= MAX_TEX_EDGE) { load(url); return; }
+      // 超限：弹出裁剪 / 压缩界面，确认后拿回合规的新图再走同一条加载路径。
+      // 取消不算加载失败，用 cancelled 标记与「文件损坏」区分开，调用方据此只提示不报错。
+      fixOversizeTexture(url, w, h).then(
+        fixed => load(fixed),
+        () => { if (onFail) onFail(Object.assign(new Error('已取消上传（图片超出尺寸上限）'), { cancelled: true })); }
+      );
     },
     undefined,
     fail
@@ -864,6 +943,332 @@ function setTex(slot, t) {
 function clearTex(slot) {
   if (slot === 1) { if (tex1) tex1.dispose(); tex1 = null; }
   else { if (tex2) tex2.dispose(); tex2 = null; }
+}
+
+/* ---- 超尺寸贴图：交互式裁剪 + 压缩 ----
+   返回 Promise：resolve(处理后的 dataURL) / reject(用户取消)。
+   只在这一处实现，上传、拖拽、导入配置三条入口共用（见 makeTex）。
+   ⚠️ 状态分两层，勿混：
+     - crop  : 图片**像素坐标**下的裁剪矩形，是唯一的事实来源；
+     - 显示层: canvas 按 contain 等比缩放，crop 矩形用 CSS 百分比画在上面。
+   拖拽只在显示坐标里量增量，再乘 imgW/dispW 换回像素，与缩放解耦。 */
+const tf = {
+  el: null, canvas: null, ctx: null, box: null, cropEl: null, img: null,
+  crop: { x: 0, y: 0, w: 1, h: 1 },      // 图片像素坐标
+  view: { x: 0, y: 0, w: 1, h: 1 },      // canvas 上图片的显示矩形（CSS 像素）
+  aspect: 0,                              // 0 = 自由
+  drag: null,
+  resolve: null, reject: null,
+};
+
+function tfOpen(img, srcW, srcH, resolve, reject) {
+  tf.el = document.getElementById('texFix');
+  tf.canvas = document.getElementById('tfCanvas');
+  tf.ctx = tf.canvas.getContext('2d');
+  tf.box = document.getElementById('tfStage');
+  tf.cropEl = document.getElementById('tfCrop');
+  tf.img = img;
+  tf.resolve = resolve; tf.reject = reject;
+  document.getElementById('tfDim').textContent = `${srcW} × ${srcH} px`;
+  document.getElementById('tfMax').textContent = `${MAX_TEX_EDGE} × ${MAX_TEX_EDGE}`;
+  document.getElementById('tfAspect').value = 'free';
+  tf.aspect = 0;
+  // 长边裁剪滑条：默认停在**最右端 = 原图长边**，即不压缩，于是「什么都不动就应用」= 原图原样，
+  // 用户按自己的需要往下拉。刻度是独立状态（tf.edge），不由裁剪框反推 —— 见 tfFinalSize 的注释。
+  tf.edge = 0;                       // 0 表示"未动过"，回显时落到量程上界
+  tfSyncEdge();
+  document.getElementById('tfFormat').value = 'image/png';
+  tf.crop = { x: 0, y: 0, w: srcW, h: srcH };
+  // ⚠️ 必须先显示再量尺寸：display:none 时 .tf-stage 的 rect 全为 0，
+  // 据此算出的显示矩形会把裁剪框压成 2px（实测）。
+  tf.el.classList.add('on');
+  tfFitCanvas();
+  tfUpdate();
+}
+
+// canvas 的 CSS 尺寸由 .tf-stage 决定（height 44vh 等），这里只把 backing store 对齐设备像素。
+// ⚠️ 图片按 contain 摆放时要留出 HANDLE_R 的边距：裁剪框四角/四边中点的圆形手柄是
+// **骑在框线上**的（margin 负值居中），全选时手柄正好压在 .tf-stage 边界上，
+// 被 overflow:hidden 裁掉一半 → elementFromPoint 命中框外，手柄点不中、拖不动（实测）。
+// 只要图片本身内缩一个手柄半径，全选状态下八个手柄就都完整落在框内。
+const TF_HANDLE_R = 12;
+function tfFitCanvas() {
+  const r = tf.box.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  tf.canvas.width = Math.max(1, Math.round(r.width * dpr));
+  tf.canvas.height = Math.max(1, Math.round(r.height * dpr));
+  const avW = Math.max(1, r.width - TF_HANDLE_R * 2);
+  const avH = Math.max(1, r.height - TF_HANDLE_R * 2);
+  const s = Math.min(avW / tf.img.width, avH / tf.img.height);
+  const w = tf.img.width * s, h = tf.img.height * s;
+  tf.view = { x: (r.width - w) / 2, y: (r.height - h) / 2, w, h };
+  tf.ctx.clearRect(0, 0, tf.canvas.width, tf.canvas.height);
+  tf.ctx.drawImage(tf.img, tf.view.x * dpr, tf.view.y * dpr, w * dpr, h * dpr);
+}
+
+// 把 crop（像素）映射到显示层：canvas 百分比 + 遮罩由 .tf-crop 的 box-shadow 承担
+function tfRender() {
+  const { x, y, w, h } = tf.view;
+  const p = tf.crop;
+  const st = tf.box.getBoundingClientRect();
+  const left = x + (p.x / tf.img.width) * w;
+  const top = y + (p.y / tf.img.height) * h;
+  const cw = (p.w / tf.img.width) * w;
+  const ch = (p.h / tf.img.height) * h;
+  tf.cropEl.style.left = (left / st.width * 100) + '%';
+  tf.cropEl.style.top = (top / st.height * 100) + '%';
+  tf.cropEl.style.width = (cw / st.width * 100) + '%';
+  tf.cropEl.style.height = (ch / st.height * 100) + '%';
+}
+
+// 把滑条的量程与刻度写回 DOM。tfOpen / tfOrig / 窗口尺寸变化都要重算。
+function tfSyncEdge() {
+  const r = tfEdgeRange();
+  const el = document.getElementById('tfSize');
+  el.min = String(r.min);
+  el.max = String(r.max);
+  el.value = String(tfEdgeValue());
+}
+
+// 裁剪尺寸 = 裁剪区**原尺寸**（1:1 像素），不缩也不放。
+// ⚠️ 这里刻意不乘滑条比例：默认 1:1 是无损的，用户想要多小就自己裁多小 ——
+// 「裁剪多大就出多大」，所见即所得。旧实现在打开弹窗那一刻就把图无条件缩到上限边长，
+// 于是裁剪框空着不用也会掉分辨率，用户根本不知道发生了什么。
+function tfCropSize() {
+  const p = tf.crop;
+  // 至少 1px；canvas 不接受 0
+  return { w: Math.max(1, Math.round(p.w)), h: Math.max(1, Math.round(p.h)) };
+}
+
+// 只朝一个方向走：把一组尺寸的**长边**等比缩到 edge，已小于 edge 则原样返回。
+// 单向是刻意的 —— 往回拉把图放大等于凭空插值；「不想要压缩」的出口是「1 : 1」按钮。
+function tfScale(s, edge) {
+  const long = Math.max(s.w, s.h);
+  if (!(edge < long)) return s;
+  const k = edge / long;
+  return { w: Math.max(1, Math.round(s.w * k)), h: Math.max(1, Math.round(s.h * k)) };
+}
+
+// 滑条刻度。范围 `[1, 原图长边]`：
+//   · 上界**必须**取长边 —— 拉到最右才是"不压缩"；若取短边（旧实现），最多只能压到短边，
+//     而短边可能仍超软上限（3360），于是"1:1"变成一整块够不着的死区。
+//   · 下界取 1，**不能**取 min(长边, 上限)：刻度够不到 4096 以下就压不出合规的图
+//     （实测 `min=4096` 时浏览器把 1024 直接夹回 4096，滑条成了摆设）。
+//   · 绝不读裁剪框：它是独立状态，读了就等于"改裁剪框顺手把滑条也改了"
+function tfEdgeRange() {
+  return { min: 1, max: Math.max(1, Math.round(Math.max(tf.img.width, tf.img.height))) };
+}
+function tfEdgeValue() {
+  const r = tfEdgeRange();
+  // 0 = 未压缩（回显即上界）；其余刻度用 clamp 而非 Math.max(1,·) —— min 属性若不生效，
+  // 拖到量程外的值会原样写进 tfScale，那就不是"压到 1024"而是"压到 1"，图上直接出事
+  return tf.edge ? Math.min(r.max, Math.max(r.min, tf.edge)) : r.max;
+}
+
+// 最终输出 = 裁剪尺寸按长边裁剪滑条等比压小（只缩不放）。
+// 软上限（MAX_TEX_EDGE）也在这里兑现：超了就在应用前压到上限内，保证交给 WebGL 的贴图合规。
+function tfFinalSize() {
+  const o = tfScale(tfCropSize(), tfEdgeValue());
+  return tfScale(o, Math.min(MAX_TEX_EDGE, Math.max(o.w, o.h)));
+}
+
+function tfUpdate() {
+  tfRender();
+  const c = tfCropSize();      // 裁出来的尺寸
+  const o = tfFinalSize();     // 真正交给 WebGL 的尺寸（裁剪后再按滑条 / 软上限压）
+  const mime = document.getElementById('tfFormat').value;
+  document.getElementById('tfQualityRow').style.display = mime === 'image/jpeg' ? '' : 'none';
+  const q = +document.getElementById('tfQuality').value / 100;
+  const out = document.getElementById('tfOut');
+  // 估算体积：PNG 约按 4B/px 上限打八折，JPEG 按质量粗略折算（只用于给用户一个量级感）
+  const px = o.w * o.h;
+  const est = mime === 'image/jpeg' ? px * (0.06 + q * 0.34) : px * 0.7;
+  const estTxt = `约 <b>${est > 1048576 ? (est / 1048576).toFixed(1) + ' MB' : Math.round(est / 1024) + ' KB'}</b>`;
+  const iw = tf.img.width, ih = tf.img.height;
+  // 三段读数各自独立：进去什么 → 裁出多少 → 再压到多少。
+  // 「裁剪」取裁剪框原像素，「压缩」＝真正交给 WebGL 的尺寸（超过软上限才会缩小）。
+  // 每一段都只在**确实变小**时才出现，所以没裁就不会有「裁剪」、没压就不会有「压缩」。
+  const cut = c.w !== iw || c.h !== ih;
+  const squeezed = o.w !== c.w || o.h !== c.h;
+  let line = `原图 <b>${iw} × ${ih}</b> px`;
+  if (cut) line += ` → 裁剪 <b>${c.w} × ${c.h}</b> px`;
+  if (squeezed) line += ` → 压缩 <b>${o.w} × ${o.h}</b> px，${estTxt}`;
+  else line += `，${estTxt}`;
+  // ⚠️ 标红看的是**裁剪尺寸**（这一步的产物是否合规），不是最终尺寸 ——
+  //    最终尺寸被软上限兜底过，永远合规，拿它判就再也标不红（实测）。
+  const tooBig = c.w > MAX_TEX_EDGE || c.h > MAX_TEX_EDGE;
+  // 三步都没变小、却仍要压：说明是软上限兜底，补一句讲清楚
+  if (!cut && !squeezed && tooBig) {
+    line += `；超过 <b>${MAX_TEX_EDGE} × ${MAX_TEX_EDGE}</b> px，应用时会自动压缩到上限以内`;
+  }
+  out.innerHTML = line + '。';
+  out.classList.toggle('bad', tooBig);
+  tfSyncEdge();
+  document.getElementById('tfSizeVal').textContent = document.getElementById('tfSize').value;
+  document.getElementById('tfQualityVal').textContent = document.getElementById('tfQuality').value;
+}
+
+// 把 crop 限制在图片范围内并保底 16px，防止拖出边界或拉到零面积。
+// ⚠️ 锁比例时不能对 w / h 各自独立夹取 —— 一旦有一边先撞到图片边界，
+// 两边就被夹成不同比例（实测 1:1 被夹成 0.84）。改为等比缩到装得下为止。
+function tfClampCrop(c) {
+  const min = 16, iw = tf.img.width, ih = tf.img.height;
+  if (tf.aspect) {
+    // 保比缩小：取宽高两个方向允许的最大缩放系数中较小者
+    const k = Math.min(1, iw / c.w, ih / c.h);
+    c.w *= k; c.h *= k;
+    if (Math.max(c.w, c.h) < min) {   // 极端窄图：退回最小尺寸并保比
+      c.w = tf.aspect >= 1 ? min : min * tf.aspect;
+      c.h = c.w / tf.aspect;
+    }
+  } else {
+    c.w = Math.min(Math.max(min, c.w), iw);
+    c.h = Math.min(Math.max(min, c.h), ih);
+  }
+  c.x = Math.min(Math.max(0, c.x), iw - c.w);
+  c.y = Math.min(Math.max(0, c.y), ih - c.h);
+  return c;
+}
+
+function tfClose() {
+  tf.el.classList.remove('on');
+  tf.drag = null;
+}
+// 弹窗开着时改变窗口尺寸要重画：canvas 的 contain 映射依赖 .tf-stage 的实际尺寸
+window.addEventListener('resize', () => { if (tf.el && tf.el.classList.contains('on')) { tfFitCanvas(); tfUpdate(); } });
+
+function tfBind() {
+  const stage = document.getElementById('tfStage');
+  const toImg = (dx, dy) => ({ x: dx * tf.img.width / tf.view.w, y: dy * tf.img.height / tf.view.h });
+
+  stage.addEventListener('pointerdown', e => {
+    const dir = e.target.dataset && e.target.dataset.dir;
+    const onBox = e.target === tf.cropEl || dir;
+    if (!onBox) return;
+    e.preventDefault();
+    stage.setPointerCapture(e.pointerId);
+    tf.drag = { dir: dir || 'move', x0: e.clientX, y0: e.clientY, c0: { ...tf.crop } };
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!tf.drag) return;
+    const d = tf.drag;
+    const p = toImg(e.clientX - d.x0, e.clientY - d.y0);
+    const c0 = d.c0, c = { ...c0 };
+    const has = s => d.dir === 'move' || d.dir.includes(s);
+    if (d.dir === 'move') { c.x = c0.x + p.x; c.y = c0.y + p.y; }
+    else {
+      // 拖左/上边：同时改起点与尺寸；拖右/下边：只改尺寸
+      if (has('w')) { c.x = c0.x + p.x; c.w = c0.w - p.x; }
+      if (has('e')) { c.w = c0.w + p.x; }
+      if (has('n')) { c.y = c0.y + p.y; c.h = c0.h - p.y; }
+      if (has('s')) { c.h = c0.h + p.y; }
+      // 锁定比例：以宽为准反推高（角手柄）或按拖动的边决定基准
+      if (tf.aspect) {
+        if (has('w') || has('e')) c.h = c.w / tf.aspect;
+        else c.w = c.h * tf.aspect;
+        if (has('n')) c.y = c0.y + c0.h - c.h;
+        if (has('w')) c.x = c0.x + c0.w - c.w;
+      }
+    }
+    // 先夹到图内再交给渲染，避免拖拽时闪出边界
+    tfClampCrop(c);
+    tf.crop = c;
+    tfUpdate();
+  });
+  const end = e => { if (tf.drag) { stage.releasePointerCapture?.(e.pointerId); tf.drag = null; } };
+  stage.addEventListener('pointerup', end);
+  stage.addEventListener('pointercancel', end);
+
+  document.getElementById('tfAspect').onchange = e => {
+    const v = +e.target.value;
+    tf.aspect = v;
+    if (!v) { tfUpdate(); return; }
+    // 以当前裁剪框中心为基准，套用新比例（保持面积尽量不变）
+    const c = { ...tf.crop };
+    const cx = c.x + c.w / 2, cy = c.y + c.h / 2;
+    const area = c.w * c.h;
+    let w = Math.sqrt(area * v), h = w / v;
+    tf.crop = tfClampCrop({ x: cx - w / 2, y: cy - h / 2, w, h });
+    tfUpdate();
+  };
+  // 全选 = 尽可能大。锁着比例时给的是**内接**矩形（3360×4800 锁 1:1 → 3360×3360），
+  // 否则锁比例就成了摆设：点一下全选就跳出个不满足比例的大框。
+  document.getElementById('tfFull').onclick = () => {
+    const iw = tf.img.width, ih = tf.img.height;
+    let w = iw, h = ih;
+    if (tf.aspect) {
+      if (tf.aspect >= 1) h = w / tf.aspect; else w = h * tf.aspect;
+      if (w > iw) { w = iw; h = w / tf.aspect; }
+      if (h > ih) { h = ih; w = h * tf.aspect; }
+    }
+    tf.crop = { x: (iw - w) / 2, y: (ih - h) / 2, w, h };
+    tfUpdate();
+  };
+  // 1:1：滑条回最右端 = 不压缩，输出就是裁剪区原像素。
+  // 滑条本身只缩不放，往回走全靠它，故必须存在。
+  document.getElementById('tfOrig').onclick = () => {
+    tf.edge = 0;                     // 0 = 未压缩，回显即量程上界
+    tfUpdate();
+  };
+  // 长边裁剪滑条 = 输出**长边**的上限：往下拉就把图按长边等比压小，拉到最右即 1:1 不压缩。
+  // ⚠️ 它只改 tf.edge（独立刻度），**不碰 tf.crop**。旧实现把压缩写回裁剪框，两个后果：
+  //    ①「裁剪」与「压缩」两段读数永远是同一个数（实测 3000×3000 被滑条压成 1024），分段白分；
+  //    ② 裁剪框被压小后不可逆，再经滑条回显，就成了"往下拉反而变大"的死循环。
+  //    不碰裁剪框之后两条都自然消失，也不再需要"反推裁剪区"那套把戏。
+  document.getElementById('tfSize').oninput = e => {
+    tf.edge = +e.target.value;
+    tfUpdate();
+  };
+  document.getElementById('tfQuality').oninput = tfUpdate;
+  document.getElementById('tfFormat').onchange = tfUpdate;
+
+  document.getElementById('tfCancel').onclick = () => {
+    const r = tf.reject; tfClose(); if (r) r(new Error('cancelled'));
+  };
+  document.getElementById('tfApply').onclick = () => {
+    // 输出尺寸 = 裁剪尺寸再按滑条 / 软上限等比压缩；滑条拉到最右且未超限时就是裁剪区原像素。
+    const o = tfFinalSize();
+    const mime = document.getElementById('tfFormat').value;
+    const q = +document.getElementById('tfQuality').value / 100;
+    const out = document.createElement('canvas');
+    out.width = o.w; out.height = o.h;
+    const c2 = out.getContext('2d');
+    // JPEG 无透明通道，先铺白底，否则透明区会变黑
+    if (mime === 'image/jpeg') { c2.fillStyle = '#fff'; c2.fillRect(0, 0, o.w, o.h); }
+    c2.imageSmoothingQuality = 'high';
+    c2.drawImage(tf.img, tf.crop.x, tf.crop.y, tf.crop.w, tf.crop.h, 0, 0, o.w, o.h);
+    let url;
+    try { url = out.toDataURL(mime, q); }
+    catch (err) { toast('图片处理失败：' + err.message, 'err', 4000); return; }
+    const r = tf.resolve; tfClose(); if (r) r(url);
+  };
+}
+
+// 调试口子：冒烟脚本要读弹窗内部状态（裁剪矩形 / 视图映射），但 tf 是模块作用域变量。
+// 与 window.padGeoInfo() 同一约定：只暴露只读快照，不要在这里做任何写操作。
+// 唯一的例外是 tfSetCrop()：裁剪框靠拖手柄只能量到大致像素，量不出"恰好 3000×3000"这类
+// 精确状态，读数分段的分支就测不准。它只写 tf.crop，与拖拽走同一条 tfUpdate 路径。
+window.tfSetCrop = (c) => { tf.crop = tfClampCrop({ ...tf.crop, ...c }); tfUpdate(); };
+window.tfState = () => ({
+  crop: { ...tf.crop }, view: { ...tf.view }, aspect: tf.aspect,
+  imgW: tf.img ? tf.img.width : 0, imgH: tf.img ? tf.img.height : 0,
+  // 刻度是独立状态（不再由裁剪框反推），输出尺寸也一并给出，冒烟脚本不必再从读数里抠数字
+  edge: tfEdgeValue(), final: tfFinalSize(),
+  open: !!(tf.el && tf.el.classList.contains('on')),
+});
+
+// 入口：加载图片（顺带拿到真实像素尺寸）→ 打开弹窗
+function fixOversizeTexture(url, w, h) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      tfOpen(img, w, h, resolve, reject);
+      // 事件绑定只做一次；tfOpen 已把全部 DOM 引用备好
+      if (!tf.bound) { tf.bound = true; tfBind(); }
+    };
+    img.onerror = () => reject(new Error('图片解码失败'));
+    img.src = url;
+  });
 }
 const WRAP_MODES = {
   clamp: THREE.ClampToEdgeWrapping,    // 不重复，边缘颜色延伸
@@ -2289,21 +2694,28 @@ function setDZPreview(dz, url, onClear) {
   c.onclick = e => { e.stopPropagation(); onClear(); };
   dz.append(img, c);
 }
+// ⚠️ 预览图一律取 `t.image.src` 而不是入口处的 url：超尺寸的图会在弹窗里被
+// 裁剪 / 压缩成一张新图，用原始 url 会让预览显示「用户没打算要的那张原图」。
+function dzPreviewSrc(t, url) {
+  return (t.image && t.image.src) || url;
+}
 bindDropzone('dz1', 'file1', (url, dz) => {
   makeTex(url, t => {
     setTex(1, t); refreshTextures(); rebuild();
-    setDZPreview(dz, url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); }));
-  }, () => texLoadFailed(1));
+    setDZPreview(dz, dzPreviewSrc(t, url), () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); }));
+  }, err => texLoadFailed(1, err));
 });
 bindDropzone('dz2', 'file2', (url, dz) => {
   makeTex(url, t => {
     setTex(2, t); refreshTextures(); rebuild();
-    setDZPreview(dz, url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); }));
-  }, () => texLoadFailed(2));
+    setDZPreview(dz, dzPreviewSrc(t, url), () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); }));
+  }, err => texLoadFailed(2, err));
 });
 // 贴图加载失败时不留下"半截状态"：槽位保持原样，预览回到占位文案（P0-2）
+// 用户主动取消超尺寸处理不算失败，用普通提示（不是红色报错）。
 function texLoadFailed(slot, err) {
   const name = slot === 1 ? '主贴图' : '腕托贴图';
+  if (err && err.cancelled) { toast(`${name}未应用：已取消处理超尺寸图片`); return; }
   const why = err && err.message ? err.message : '文件可能已损坏或不是受支持的图片格式';
   toast(`${name}加载失败，未应用：${why}`, 'err', 4000);
 }
@@ -2527,11 +2939,11 @@ stage.addEventListener('drop', e => {
     const url = rd.result;
     if (!tex1) {
       makeTex(url, t => { setTex(1, t); refreshTextures(); rebuild();
-        setDZPreview(document.getElementById('dz1'), url, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); })); },
+        setDZPreview(document.getElementById('dz1'), dzPreviewSrc(t, url), () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); })); },
         err => texLoadFailed(1, err));
     } else {
       makeTex(url, t => { setTex(2, t); refreshTextures(); rebuild();
-        setDZPreview(document.getElementById('dz2'), url, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); })); },
+        setDZPreview(document.getElementById('dz2'), dzPreviewSrc(t, url), () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); })); },
         err => texLoadFailed(2, err));
     }
   };
@@ -3514,18 +3926,27 @@ async function importConfigFile(file) {
       makeTex(dataURL, t => {
         try {
           setTex(slot, t); refreshTextures(); rebuild();
+          // 预览取处理后的实际图源：超尺寸贴图会在弹窗里被裁 / 压成新图
+          const src = dzPreviewSrc(t, dataURL);
           if (slot === 1) {
-            setDZPreview(document.getElementById('dz1'), dataURL, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); }));
+            setDZPreview(document.getElementById('dz1'), src, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); }));
           } else {
-            setDZPreview(document.getElementById('dz2'), dataURL, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); }));
+            setDZPreview(document.getElementById('dz2'), src, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); }));
           }
         } finally {
           finishTex();   // 成功回调内部抛错也要收敛，否则永远等不到"配置已导入"
         }
       }, err => {
-        texFailed++;
-        console.error('[导入配置] 贴图加载失败', name, err);
-        toast(`配置中的${slot === 1 ? '主贴图' : '腕托贴图'}加载失败（文件可能已损坏）`, 'err', 4000);
+        // 用户在弹窗里放弃不算"坏文件"：只提示一句，不计入失败数
+        const slotName = slot === 1 ? '主贴图' : '腕托贴图';
+        if (err && err.cancelled) {
+          console.warn('[导入配置] 已取消处理超尺寸贴图', name);
+          toast(`配置中的${slotName}未应用：已取消处理超尺寸图片`);
+        } else {
+          texFailed++;
+          console.error('[导入配置] 贴图加载失败', name, err);
+          toast(`配置中的${slotName}加载失败（文件可能已损坏）`, 'err', 4000);
+        }
         finishTex();
       });
     }
@@ -3642,6 +4063,66 @@ resize();
   if (curveEdit && (overlayDirty || overlayKey() !== lastOverlayKey)) drawCurveOverlay();
 })();
 </script>
+
+<!-- 超尺寸贴图处理弹窗：裁剪 + 压缩。
+     上传/导入的图片任一边超过 MAX_TEX_EDGE 时由 fixOversizeTexture() 打开，
+     确认后把处理结果回传给原加载流程，取消则放弃本次贴图。 -->
+<div id="texFix" role="dialog" aria-modal="true" aria-labelledby="tfTitle">
+  <div class="tf-box">
+    <div class="tf-head">
+      <h2 id="tfTitle">调整贴图尺寸</h2>
+      <p>这张图片为 <span class="tf-dim" id="tfDim">—</span>，可用边长上限为
+        <span class="tf-dim" id="tfMax">—</span>。<br>
+        <b>裁剪框</b>决定保留多大，<b>长边裁剪</b>只把图压小；仍超过上限时自动等比压缩到上限以内。</p>
+    </div>
+    <div class="tf-body">
+      <div class="tf-stage" id="tfStage">
+        <canvas id="tfCanvas"></canvas>
+        <div class="tf-crop" id="tfCrop">
+          <span class="tf-h" data-dir="nw"></span><span class="tf-h" data-dir="n"></span><span class="tf-h" data-dir="ne"></span><span class="tf-h" data-dir="e"></span><span class="tf-h" data-dir="se"></span><span class="tf-h" data-dir="s"></span><span class="tf-h" data-dir="sw"></span><span class="tf-h" data-dir="w"></span>
+        </div>
+      </div>
+      <div class="tf-cts">
+        <div class="row">
+          <label>裁剪比例</label>
+          <select id="tfAspect">
+            <option value="free">自由</option>
+            <option value="1">1 : 1</option>
+            <option value="1.3333333">4 : 3</option>
+            <option value="1.5">3 : 2</option>
+            <option value="1.7777778">16 : 9</option>
+            <option value="0.75">3 : 4</option>
+            <option value="0.6666667">2 : 3</option>
+          </select>
+          <button class="btn ghost" id="tfFull" type="button" style="flex:0 0 84px;margin:0;padding:6px 0;">全选</button>
+        </div>
+        <div class="row">
+          <label>长边裁剪</label>
+          <input type="range" id="tfSize" min="16" max="4096" step="1" value="4096">
+          <span class="val" id="tfSizeVal">4096</span>
+          <button class="btn ghost" id="tfOrig" type="button" style="flex:0 0 66px;margin:0;padding:6px 0;">1 : 1</button>
+        </div>
+        <div class="row">
+          <label>输出格式</label>
+          <select id="tfFormat">
+            <option value="image/png">PNG（无损，保留透明）</option>
+            <option value="image/jpeg">JPEG（体积更小）</option>
+          </select>
+        </div>
+        <div class="row" id="tfQualityRow">
+          <label>JPEG 质量</label>
+          <input type="range" id="tfQuality" min="40" max="100" step="5" value="90">
+          <span class="val" id="tfQualityVal">90</span>
+        </div>
+      </div>
+      <div class="tf-out" id="tfOut">—</div>
+    </div>
+    <div class="tf-foot">
+      <button class="btn ghost" id="tfCancel" type="button">取消上传</button>
+      <button class="btn" id="tfApply" type="button">应用并上传</button>
+    </div>
+  </div>
+</div>
 <div id="toast-wrap"></div>
 </body>
 </html>
