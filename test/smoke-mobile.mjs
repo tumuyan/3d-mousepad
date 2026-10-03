@@ -117,6 +117,70 @@ try {
   ok('参数按钮：不再脱离文档流（不是 fixed 浮层）', togglePos === 'static',
     `position=${togglePos}`);
 
+  /* ---------- 顶部按钮：点一下不许"跳字形" ---------- */
+  // 这组断言盯的是「点按钮时位移/换文案造成的跳动」：按钮开合抽屉时块级盒子必须一模一样，
+  // 文案也必须一样。旧实现把它做成「⚙ 参数」⇄「▸ 收起」两套文案，字宽不同 → 整条工具栏重排。
+  const btnBoxAndText = () => page.evaluate(() => {
+    const b = document.getElementById('panelToggle');
+    const r = b.getBoundingClientRect();
+    return { text: b.textContent, w: Math.round(r.width * 100) / 100, h: Math.round(r.height * 100) / 100 };
+  });
+  const btnBefore = await btnBoxAndText();
+  ok('顶部按钮：初始文案固定（不随抽屉状态改字）',
+    /参数/.test(btnBefore.text), btnBefore.text);
+  // 一行放得下就算过：实测 35px（12px 字号 + 上下 padding，含边框）
+  ok('顶部按钮：短文案不换行（高 ≤ 36px，一行放得下）',
+    btnBefore.h <= 36, `h=${btnBefore.h}`);
+
+  /* ---------- 语言按钮：与「配置」同组，且排在它右边 ---------- */
+  const langOrder = await page.evaluate(() => {
+    const left = [...document.querySelectorAll('#toolbar .tb-left > *')].map(e => e.id || e.className);
+    const cfg = document.getElementById('ddConfig').getBoundingClientRect();
+    const lang = document.getElementById('langBtn').getBoundingClientRect();
+    return { order: left, cfgRight: Math.round(cfg.right), langLeft: Math.round(lang.left) };
+  });
+  ok('语言按钮：在工具栏左组内（与「配置」同组），已从右组移出',
+    langOrder.order.indexOf('langBtn') > -1,
+    langOrder.order.join(' | '));
+  ok('语言按钮：排在「配置」右边',
+    langOrder.langLeft >= langOrder.cfgRight - 1,
+    `配置 right=${langOrder.cfgRight}, 语言 left=${langOrder.langLeft}`);
+
+  /* ---------- 第一排按钮：高度不随界面语言变 ---------- */
+  // 为什么单独量这件事：按钮高度 = 行盒高度 = max(文本框高度, font-size × `normal` 行高系数)，
+  // 而 `normal` 的系数**按字符各自的字体度量算**。中文界面里每个按钮都含 CJK 字形
+  // （CJK 字体的 ascent+descent 明显大于 Segoe UI / Arial），行盒被撑到 17px；
+  // 切到英文后按钮文案全变 ASCII，只有语言按钮仍是 CJK（"中文"），行盒掉回 14px ——
+  // 于是中文界面下 English 按钮比别人矮 3px、视觉上"低一截"。
+  // 这类问题不抛异常、控制台干净，只在不跨语言量盒子时才会漏掉。
+  const rowBoxes = () => page.evaluate(() => {
+    const sel = ['#ddExportImg .dd-btn', '#ddExportModel .dd-btn', '#ddConfig .dd-btn',
+                 '#panelToggle', '#langBtn', '#modeSeg', '#viewSeg'];
+    return sel.map(s => {
+      const e = document.querySelector(s);
+      const b = e.getBoundingClientRect();
+      return { s, h: +b.height.toFixed(2), t: +b.top.toFixed(2), b: +b.bottom.toFixed(2) };
+    }).filter(x => x.h > 0);
+  });
+  const zhRow = await rowBoxes();
+  await page.click('#langBtn');
+  await page.waitForTimeout(350);
+  const enRow = await rowBoxes();
+  const spread = r => Math.max(...r.map(x => x.h)) - Math.min(...r.map(x => x.h));
+  ok('第一排按钮：同一语言内高度一致（不因文案含中文而变高）',
+    spread(zhRow) < 0.5 && spread(enRow) < 0.5,
+    `中文高度=${JSON.stringify(zhRow.map(x => x.h))}，英文高度=${JSON.stringify(enRow.map(x => x.h))}`);
+  // 逐项比中英两种界面的高度：同一个按钮换个语言不许变高/变矮。
+  // ⚠️ 只比高度、不比 top/left —— 中英文案宽度本就不同（English 比 中文 长），
+  //    窄屏下会把后面的按钮挤到下一行，纵向位置变化是预期内的重排，不是缺陷。
+  //    这里要盯的是「同一个按钮自己有没有变高」。
+  const drift = zhRow.map((z, i) => ({ s: z.s, dh: +(enRow[i].h - zhRow[i].h).toFixed(2) }))
+    .filter(d => Math.abs(d.dh) > 0.5);
+  ok('第一排按钮：切语言后各按钮高度逐像素不变（English 不再低一截）',
+    drift.length === 0, drift.length ? JSON.stringify(drift) : '全部一致');
+  await page.click('#langBtn');   // 切回中文
+  await page.waitForTimeout(350);
+
   /* ---------- 折叠把手：收起时贴在屏幕左缘 ---------- */
   let handle = await boxOf('#panelHandle');
   ok('折叠把手：窄屏可见', m.handleDisplay !== 'none', m.handleDisplay);
@@ -133,6 +197,15 @@ try {
   const panelOpen = await boxOf('#panel');
   ok('抽屉：点按钮后面板滑入视口内', m.panelOpen && panelOpen.l >= -1,
     `panelOpen=${m.panelOpen}, panel left=${panelOpen.l}`);
+  /* ---------- 顶部按钮：展开态盒子与文案必须与收起态完全相同 ---------- */
+  // 同一个坐标点、同一个尺寸 —— 用户说的「大小位置都不变」就是这条。
+  const btnAfter = await btnBoxAndText();
+  ok('顶部按钮：抽屉开合前后按钮盒子一模一样（不位移、不改尺寸）',
+    btnAfter.w === btnBefore.w && btnAfter.h === btnBefore.h,
+    `收起 ${btnBefore.w}×${btnBefore.h} → 展开 ${btnAfter.w}×${btnAfter.h}`);
+  ok('顶部按钮：抽屉开合前后文案不变', btnAfter.text === btnBefore.text,
+    `"${btnBefore.text}" → "${btnAfter.text}"`);
+
   /* ---------- 层级：抽屉必须盖住工具栏 ---------- */
   // 旧实现把工具栏 z-index 设成 11「高于抽屉 9」，但两者属于不同的层叠上下文
   // （抽屉是 #app 的子元素，工具栏是 #stage 的后代），11 压不住 9：抽屉一打开，
@@ -200,19 +273,28 @@ try {
   m = await metrics();
   ok('抽屉：展开态只能用把手/遮罩收起（参数按钮已被抽屉盖住）',
     !m.panelOpen, `panelOpen=${m.panelOpen}`);
-  // 收起态下参数按钮可点：展开抽屉，并确认它的无障碍语义已切到「收起」
+  // 收起态下参数按钮可点：展开抽屉，并确认无障碍语义与 Tab 序位
   await page.tap('#panelToggle');
   await page.waitForTimeout(400);
   const aria = await page.evaluate(() => {
     const t = document.getElementById('panelToggle'), h = document.getElementById('panelHandle');
     return { tLabel: t.getAttribute('aria-label'), tExpanded: t.getAttribute('aria-expanded'),
+             tTab: t.tabIndex, tText: t.textContent,
              hLabel: h.getAttribute('aria-label'), hExpanded: h.getAttribute('aria-expanded') };
   });
   ok('抽屉：展开后参数按钮/把手的无障碍语义切到「收起」',
     aria.tLabel === '收起参数面板' && aria.tExpanded === 'true'
     && aria.hLabel === '收起参数面板' && aria.hExpanded === 'true', JSON.stringify(aria));
+  ok('抽屉：展开态下参数按钮文案保持不变（只换颜色，不换字）',
+    /参数/.test(aria.tText), aria.tText);
+  // 展开态工具栏已 pointer-events:none，参数按钮点不到，但它仍要能从 Tab 序位列出去，
+  // 免得键盘用户把焦点停在看不见的按钮上（出口是把手 + Esc）。
+  ok('抽屉：展开态参数按钮已移出 Tab 序位（焦点不会停在点不到的按钮上）',
+    aria.tTab === -1, `tabIndex=${aria.tTab}`);
   await page.tap('#panelHandle');
   await page.waitForTimeout(400);
+  const tabBack = await page.evaluate(() => document.getElementById('panelToggle').tabIndex);
+  ok('抽屉：收起态参数按钮回到 Tab 序位（键盘可达）', tabBack === 0, `tabIndex=${tabBack}`);
 
   /* ---------- 触控尺寸：滑条命中区域必须够大（手指点得中） ---------- */
   await page.evaluate(() => document.querySelectorAll('details').forEach(d => { d.open = true; }));

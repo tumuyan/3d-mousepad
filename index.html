@@ -20,13 +20,45 @@
 <link rel="license" href="https://www.gnu.org/licenses/agpl-3.0.html">
 <link rel="icon" type="image/png" href="favicon.png">
 <style>
+  /* ---------- 设计 token（颜色 / 圆角 / 阴影 / 字号的唯一出处） ----------
+     改主题前同样的"次级按钮""卡片描边"在 <style> 与 JS 内联样式里各存了一份
+     （#3a4150 一共写了 3 遍、#3a3d47 写了 9 遍），换色只能全局搜。现在全部收口到这里。
+     背景按层级排：app < panel < 卡片 < 浮层，每层靠一步亮度差拉开，不靠描边堆叠。 */
+  :root {
+    color-scheme: dark;          /* 原生控件（滚动条 / 下拉列表 / 复选框）跟随暗色，避免亮色刺眼 */
+    /* 背景 */
+    --bg-app:#17181c; --bg-panel:#1e2026; --bg-card:#262931;
+    --bg-float:#262931f2; --bg-bar:#262931e6; --bg-raise:#2a2e38;
+    --bg-hover:#31343e; --bg-chip:#3a3d47; --bg-input:#1a1c22; --bg-sunken:#14161b;
+    /* 描边（由弱到强） */
+    --line:#2c2f38; --line-2:#333743; --line-3:#3a3d47; --line-4:#4a4e5c;
+    /* 文字：--fg-4 是最浅的一档"辅助文字"，在卡片底色上仍有 4.5:1（AA）。
+       旧值 #6f7382 只有 3.07:1，11px 的 .hint / .tf-hint 属于典型的不达标灰。 */
+    --fg:#e8eaf0; --fg-2:#d7d9e0; --fg-3:#a6aab8; --fg-4:#8b8fa0;
+    /* 品牌与语义色 */
+    --accent:#ff7eb6; --accent-2:#ff5e8a; --accent-soft:#ffb9d6; --accent-dim:#ff9db8;
+    --ok:#7fd3a0; --ok-soft:#a9e8c3; --ok-bg:#2f6f4f; --warn:#ffb26b; --err:#ff6b78;
+    /* 形与阴影 */
+    --r-sm:6px; --r-md:8px; --r-lg:10px; --r-xl:14px;
+    --sh-pop:0 10px 30px #00000073; --sh-float:0 4px 14px #00000059; --sh-inset:0 1px 3px #0006;
+    --fs-11:11px; --fs-12:12px; --fs-13:13px;
+  }
   * { margin:0; padding:0; box-sizing:border-box; }
   html,body { height:100%; overflow:hidden; font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
-    -webkit-text-size-adjust:100%; }
+    -webkit-text-size-adjust:100%; background:var(--bg-app); }
+  /* 键盘可见焦点：此前全站没有一条 :focus-visible，Tab 走过控件时看不出焦点在哪。
+     只给键盘焦点（鼠标点击不显示），2px 品牌色 + 2px 偏移，深色底上一眼可见。 */
+  :where(button,summary,select,input,a,[tabindex]):focus-visible {
+    outline:2px solid var(--accent); outline-offset:2px;
+  }
+  /* 拖滑条时不要把标签文字选中（选中高亮会盖住读数），但提示段落仍可复制。
+     ⚠️ 只圈「纯展示」元素：输入框（#slotName）不在列表里 —— 列进去等于
+     连用户自己敲的字都选不中、复制不出来，是明确的可用性回归。 */
+  .row label, .row .val, .btn, .dd-btn, .seg button, summary { user-select:none; }
   /* 100dvh 优先：移动端浏览器地址栏收起/展开会改变可视高度，100vh 会让底部被地址栏盖住。
      旧浏览器回退到 100vh（上一行已声明）。 */
   #app {
-    display:flex; height:100vh; height:100dvh; background:#17181c;
+    display:flex; height:100vh; height:100dvh; background:var(--bg-app);
     /* ⚠️ #app 必须自己建立一个层叠上下文（z-index + position 即可），
        否则页面里各浮层会各自另立门户，z-index 互相之间根本不可比：
        抽屉是 #app 的直接子元素（z:9），工具栏却是 #stage 的后代（z:11），
@@ -39,90 +71,222 @@
   /* ---------- 侧栏 ---------- */
   #panel {
     width:330px; min-width:330px; height:100%; overflow-y:auto;
-    background:#1e2026; color:#d7d9e0; padding:14px 14px 40px;
-    border-right:1px solid #2c2f38;
+    background:var(--bg-panel); color:var(--fg-2); padding:14px 14px 40px;
+    border-right:1px solid var(--line);
     -webkit-overflow-scrolling:touch;   /* 移动端惯性滚动 */
     overscroll-behavior:contain;        /* 滚到尽头不要把滚动传给页面 */
     padding-left:max(14px, env(safe-area-inset-left));
+    scrollbar-width:thin; scrollbar-color:var(--bg-chip) transparent;   /* Firefox */
+    /* 滚动条常驻占位：槽位保存后列表忽长忽短，没有它内容宽度会跳一下 */
+    scrollbar-gutter:stable;
   }
   #panel::-webkit-scrollbar { width:8px; }
-  #panel::-webkit-scrollbar-thumb { background:#3a3d47; border-radius:4px; }
-  h1 { font-size:17px; font-weight:600; color:#fff; padding:4px 2px 12px; letter-spacing:.5px; }
-  h1 span { color:#ff7eb6; }
-  details { background:#262931; border:1px solid #333743; border-radius:10px; margin-bottom:10px; overflow:hidden; }
+  #panel::-webkit-scrollbar-track { background:transparent; }
+  #panel::-webkit-scrollbar-thumb { background:var(--bg-chip); border-radius:4px; }
+  #panel::-webkit-scrollbar-thumb:hover { background:#4a4e5c; }
+  h1 {
+    font-size:17px; font-weight:600; color:#fff; padding:4px 2px 12px; letter-spacing:.5px;
+    display:flex; align-items:baseline; gap:5px;
+  }
+  h1 .hl { color:var(--accent); }
+  /* 分组卡片：展开时标题与内容之间加一条分隔线，收起时是一整个可点的标题条 */
+  details {
+    background:var(--bg-card); border:1px solid var(--line-2); border-radius:var(--r-lg);
+    margin-bottom:10px; overflow:hidden;
+  }
   summary {
-    cursor:pointer; padding:10px 12px; font-size:13px; font-weight:600; color:#e8eaf0;
-    list-style:none; user-select:none; display:flex; align-items:center;
+    cursor:pointer; padding:10px 12px; font-size:var(--fs-13); font-weight:600; color:var(--fg);
+    list-style:none; display:flex; align-items:center; transition:background .15s;
   }
-  summary::before { content:"▸"; margin-right:8px; font-size:11px; color:#8b8fa0; transition:transform .15s; }
+  summary:hover { background:var(--bg-hover); }
+  summary::before { content:"▸"; margin-right:8px; font-size:11px; color:var(--fg-4); transition:transform .15s; }
   details[open] summary::before { transform:rotate(90deg); }
-  .sec-body { padding:4px 12px 12px; }
+  details[open] > summary { border-bottom:1px solid var(--line-2); }
+  .sec-body { padding:6px 12px 12px; }
 
+  /* ---------- 控件行（label + 控件 + 读数） ----------
+     标签固定 64px：超过 5 个汉字会挤压滑条，故标签文案要短（见 Agents.md §UI）。 */
   .row { display:flex; align-items:center; margin:8px 0; gap:8px; min-width:0; }
-  .row label { flex:0 0 64px; font-size:12px; color:#a6aab8; }
-  .row input[type=range] { flex:1 1 auto; min-width:0; accent-color:#ff7eb6; height:20px; }
-  .row .val { flex:0 0 58px; width:58px; font-size:11px; color:#c9cdda; text-align:right; font-variant-numeric:tabular-nums; }
-  /* 方案槽位：一行一个已保存的设计，名字 + 载入 / 删除 */
-  .slot-row { display:flex; align-items:center; gap:6px; padding:5px 0; border-top:1px solid #333743; }
-  .slot-name { flex:1; font-size:12px; color:#e8eaf0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .slot-row button { flex:0 0 auto; padding:3px 9px; border:0; border-radius:5px;
-    background:#3a4150; color:#e6e9ef; cursor:pointer; font-size:12px; }
-  #slotName { flex:1; min-width:0; background:#1b1d23; border:1px solid #333743;
-    border-radius:5px; color:#e6e9ef; padding:5px 8px; font-size:12px; }
-  .slot-row button, .slot-row .slot-name { min-height:28px; }
-  .row input[type=color] { width:42px; height:24px; border:none; border-radius:5px; background:none; cursor:pointer; padding:0; }
-  .row select {
-    flex:1; background:#1a1c22; color:#d7d9e0; border:1px solid #3a3d47; border-radius:6px;
-    padding:5px 8px; font-size:12px; outline:none;
+  .row label { flex:0 0 64px; font-size:var(--fs-12); color:var(--fg-3); line-height:1.25; }
+  /* label 与控件由 htmlFor 绑定后，标签本身就是命中区：
+     此前每行左侧有 64px 宽的"死区"，触屏下（行高 34px）白白浪费一大片点击面积。 */
+  .row label[for] { cursor:pointer; }
+  .row label[for]:hover { color:var(--fg); }
+  .row .val {
+    flex:0 0 58px; width:58px; font-size:var(--fs-11); color:var(--fg-2); text-align:right;
+    font-variant-numeric:tabular-nums; pointer-events:none;
   }
-  .row input[type=checkbox] { accent-color:#ff7eb6; width:15px; height:15px; }
+  /* 滑条：原生 range 在深色底上轨道几乎不可见、拇指是系统灰方块，与面板内其他控件不搭。
+     统一成 4px 细轨道 + 已填充段（--fill 由 JS 按当前值写入，见 paintRange）+ 品牌色圆拇指。
+     ⚠️ 命中区仍是整个 input 盒子（20px，触屏 34px），"点按位置 → 数值"的映射仍由浏览器负责，
+     故不影响触屏拖动，也不动任何取值逻辑。 */
+  .row input[type=range] {
+    -webkit-appearance:none; appearance:none; background:transparent;
+    flex:1 1 auto; min-width:0; height:20px; cursor:pointer;
+  }
+  .row input[type=range]::-webkit-slider-runnable-track {
+    height:4px; border-radius:2px;
+    background:linear-gradient(90deg,
+      var(--accent) 0 var(--fill,0%), rgba(255,255,255,.16) var(--fill,0%) 100%);
+  }
+  .row input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; appearance:none;
+    width:14px; height:14px; margin-top:-5px; border-radius:50%;
+    background:#fff; border:3px solid var(--accent); box-shadow:var(--sh-inset);
+    transition:transform .12s ease, box-shadow .12s ease;
+  }
+  .row input[type=range]:hover::-webkit-slider-thumb { transform:scale(1.15); }
+  .row input[type=range]:active::-webkit-slider-thumb { transform:scale(1.25); }
+  .row input[type=range]::-moz-range-track { height:4px; border-radius:2px; background:#ffffff29; }
+  .row input[type=range]::-moz-range-progress { height:4px; border-radius:2px; background:var(--accent); }
+  .row input[type=range]::-moz-range-thumb {
+    width:14px; height:14px; border-radius:50%; background:#fff;
+    border:3px solid var(--accent); box-shadow:var(--sh-inset);
+  }
+  /* 复选框：accent-color 在不同平台下形态差异大（macOS 还是蓝色方块），
+     自绘成与面板一致的方块，勾号按比例居中，故触屏放大到 22px 也不会跑位。 */
+  .row input[type=checkbox] {
+    -webkit-appearance:none; appearance:none; flex:0 0 auto; cursor:pointer;
+    width:16px; height:16px; border:1px solid var(--line-4); border-radius:4px;
+    background:var(--bg-input); position:relative; transition:background .15s, border-color .15s;
+  }
+  .row input[type=checkbox]:hover { border-color:var(--accent); }
+  .row input[type=checkbox]:checked { background:var(--accent); border-color:var(--accent); }
+  .row input[type=checkbox]:checked::after {
+    content:""; position:absolute; left:50%; top:50%;
+    width:24%; height:46%; border:2px solid #fff; border-width:0 2px 2px 0;
+    transform:translate(-50%,-62%) rotate(43deg);
+  }
+  /* 颜色：原生 swatch 外框与面板格格不入，改为带描边的圆角色块 */
+  .row input[type=color] {
+    -webkit-appearance:none; appearance:none; width:44px; height:24px; padding:2px;
+    border:1px solid var(--line-3); border-radius:var(--r-sm); background:var(--bg-input);
+    cursor:pointer; flex:0 0 auto;
+  }
+  .row input[type=color]:hover { border-color:var(--accent); }
+  .row input[type=color]::-webkit-color-swatch-wrapper { padding:0; }
+  .row input[type=color]::-webkit-color-swatch { border:none; border-radius:3px; }
+  .row select {
+    flex:1; min-width:0; background:var(--bg-input); color:var(--fg-2);
+    border:1px solid var(--line-3); border-radius:var(--r-sm);
+    padding:5px 8px; font-size:var(--fs-12); cursor:pointer;
+  }
+  .row select:hover { border-color:var(--line-4); }
+  /* 文本输入（配置名称 / 槽位名称） */
+  .row input[type=text] {
+    flex:1; min-width:0; background:var(--bg-input); color:var(--fg);
+    border:1px solid var(--line-3); border-radius:var(--r-sm);
+    padding:5px 8px; font-size:var(--fs-12);
+  }
+  .row input[type=text]:hover { border-color:var(--line-4); }
+  .row input[type=text]::placeholder { color:var(--fg-4); }
+  /* 色值读数：改颜色时能直接抄走十六进制，不用去开取色器。
+     ⚠️ 不能带 pointer-events:none —— 那会让鼠标根本落不到这段文字上，
+     起不了选区，「直接抄」就成了一句空话（选中高亮不受影响）。 */
+  .row .hex {
+    flex:1; min-width:0; text-align:right; font-size:var(--fs-11); color:var(--fg-4);
+    font-variant-numeric:tabular-nums; text-transform:uppercase; user-select:all;
+  }
+  /* 行内次级按钮（重置锚点 / 适应视图 / 清空统计） */
+  .btn-mini {
+    flex:0 0 auto; padding:4px 10px; border:0; border-radius:var(--r-sm);
+    background:var(--bg-chip); color:var(--fg-2); cursor:pointer; font-size:var(--fs-12);
+    white-space:nowrap; transition:background .15s, color .15s;
+  }
+  .btn-mini:hover { background:var(--bg-hover); color:#fff; }
+  .btn-mini:active { transform:translateY(1px); }
+
+  /* 方案槽位：一行一个已保存的设计，名字 + 载入 / 删除 */
+  .slot-row { display:flex; align-items:center; gap:6px; padding:5px 0; border-top:1px solid var(--line-2); }
+  .slot-name { flex:1; min-width:0; font-size:var(--fs-12); color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .slot-row button {
+    flex:0 0 auto; padding:3px 9px; border:0; border-radius:5px;
+    background:var(--bg-chip); color:var(--fg-2); cursor:pointer; font-size:var(--fs-12);
+    transition:background .15s, color .15s;
+  }
+  .slot-row button:hover { background:var(--bg-hover); color:#fff; }
+  #slotName { flex:1; min-width:0; background:var(--bg-input); border:1px solid var(--line-2);
+    border-radius:5px; color:var(--fg); padding:5px 8px; font-size:var(--fs-12); }
+  /* 鼠标/键盘聚焦都换边框色，但**不写 outline:none** ——
+     否则 #slotName:focus 优先级(1 个 id)会盖过后面的
+     :where(input):focus-visible(0 特异性)，这个输入框恰好拿不到全站统一的
+     键盘焦点圈，Tab 走到它时看不出焦点在哪。
+     想让鼠标点击不出现同款描边，交给 :focus-visible 自身的语义就够了。 */
+  #slotName:focus { border-color:var(--accent); }
+  .slot-row button, .slot-row .slot-name { min-height:28px; }
 
   /* ---------- 上传区 ---------- */
   .dropzone {
-    border:1.5px dashed #4a4e5c; border-radius:10px; padding:12px; text-align:center;
-    font-size:12px; color:#8b8fa0; cursor:pointer; transition:.15s; margin-bottom:8px;
+    border:1.5px dashed var(--line-4); border-radius:var(--r-lg); padding:12px; text-align:center;
+    font-size:var(--fs-12); color:var(--fg-4); cursor:pointer; transition:.15s; margin-bottom:8px;
     background:#21242c; position:relative;
   }
-  .dropzone:hover { border-color:#ff7eb6; color:#ffb9d6; }
-  .dropzone img { max-width:100%; max-height:90px; border-radius:6px; display:block; margin:0 auto; }
+  .dropzone:hover, .dropzone:focus-visible { border-color:var(--accent); color:var(--accent-soft); background:#262a33; }
+  .dropzone:active { background:#1c1f26; }
+  .dropzone small { color:var(--fg-4); }
+  .dropzone img { max-width:100%; max-height:90px; border-radius:var(--r-sm); display:block; margin:0 auto; }
   .dropzone .clear {
-    position:absolute; top:5px; right:7px; width:18px; height:18px; border-radius:50%;
-    background:#000a; color:#fff; font-size:11px; line-height:18px; cursor:pointer;
+    position:absolute; top:5px; right:7px; width:20px; height:20px; border-radius:50%;
+    background:#000000b3; color:#fff; font-size:var(--fs-12); line-height:20px; cursor:pointer;
+    transition:background .15s;
   }
   .dropzone .clear:hover { background:#ff4d6d; }
   .dz-wrap { position:relative; padding-left:34px; margin-bottom:8px; }
   .dz-wrap .dropzone { margin-bottom:0; }
-  .hint { font-size:11px; color:#6f7382; margin:2px 0 8px; line-height:1.5; }
+  /* 辅助说明文字：旧值 #6f7382 在卡片底色上只有 3.07:1，11px 达不到 AA，提到 --fg-4（4.5:1） */
+  .hint { font-size:var(--fs-11); color:var(--fg-4); margin:2px 0 8px; line-height:1.6; }
 
   /* ---------- Toast ---------- */
+  /* role=status + aria-live：toast 是唯一的用户反馈通道，读屏用户必须能听到 */
   #toast-wrap { position:fixed; left:50%; bottom:28px; transform:translateX(-50%);
     display:flex; flex-direction:column; gap:8px; z-index:9999; pointer-events:none; }
-  .toast { pointer-events:auto; max-width:320px; padding:11px 16px; border-radius:10px;
-    font-size:13px; line-height:1.5; color:#e6e8ee; background:#2a2e38;
-    border:1px solid #4a4e5c; box-shadow:0 6px 22px #0008;
+  .toast { pointer-events:auto; max-width:320px; padding:11px 16px; border-radius:var(--r-lg);
+    font-size:var(--fs-13); line-height:1.5; color:#e6e8ee; background:var(--bg-raise);
+    border:1px solid var(--line-4); box-shadow:var(--sh-pop);
     opacity:0; transform:translateY(10px); transition:opacity .25s, transform .25s; }
   .toast.show { opacity:1; transform:translateY(0); }
-  .toast.err { color:#ff6b78; }
+  .toast.err { color:var(--err); border-color:#ff6b7873; box-shadow:var(--sh-pop), inset 3px 0 0 var(--err); }
 
-  /* ---------- 按钮 ---------- */
+  /* ---------- 按钮 ----------
+     三档语义：.btn（主操作，渐变实心）/ .btn.ghost（次级，描边灰底）/ .btn.ok（导入等"正向"动作）。
+     此前"次级按钮"有三种写法（.btn.ghost、.slot-row button、JS 内联 #3a4150），
+     同一个组件在面板里长得不一样。 */
   .btn {
-    display:block; width:100%; padding:9px 0; margin:8px 0 0; border:none; border-radius:8px;
-    background:linear-gradient(135deg,#ff7eb6,#ff5e8a); color:#fff; font-size:13px; font-weight:600;
-    cursor:pointer; letter-spacing:1px; transition:filter .15s;
+    display:block; width:100%; padding:9px 0; margin:8px 0 0; border:1px solid transparent;
+    border-radius:var(--r-md);
+    background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#fff;
+    font-size:var(--fs-13); font-weight:600;
+    cursor:pointer; letter-spacing:1px; transition:filter .15s, transform .1s;
   }
   .btn:hover { filter:brightness(1.12); }
-  .btn.ghost { background:#31343e; color:#cfd2dc; font-weight:500; }
+  .btn:active { transform:translateY(1px); filter:brightness(.96); }
+  .btn.ghost { background:var(--bg-hover); color:#cfd2dc; font-weight:500; }
   .btn.ghost:hover { background:#3b3f4b; }
+  .btn.ok { background:var(--ok-bg); }
+  .btn.ok:hover { filter:brightness(1.15); }
+  /* 导出区分组：一行两个并排 + 小组标题。
+     旧实现是 8 个等权重全宽按钮竖排（8 行 × 34px），粉色块占掉小半屏，
+     主次不分；工具栏里已有同名入口，重复的视觉噪声更大。 */
+  .btn-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; }
+  .btn-grid .btn { margin-top:0; letter-spacing:0; }
+  .btn-stack { display:grid; gap:6px; margin-top:6px; }
+  .btn-stack .btn { margin-top:0; letter-spacing:0; }
+  .btn-cap {
+    margin:12px 0 0; font-size:var(--fs-11); color:var(--fg-4);
+    display:flex; align-items:center; gap:8px;
+  }
+  .btn-cap::after { content:""; flex:1; height:1px; background:var(--line-2); }
   .btn-row { display:flex; gap:6px; }
   .btn-row .btn { margin-top:8px; }
   button.paste-btn {
     position:absolute; left:0; top:0; bottom:0;
     width:26px; padding:0; margin:0;
     display:flex; align-items:center; justify-content:center;
-    border:1.5px solid #4a4e5c; background:#2a2e38; color:#cdd3dd; border-radius:6px;
+    border:1.5px solid var(--line-4); background:var(--bg-raise); color:#cdd3dd; border-radius:var(--r-sm);
     cursor:pointer; font-size:14px; line-height:1; transition:.15s;
   }
-  button.paste-btn:hover { border-color:#ff7eb6; color:#ffb9d6; }
+  button.paste-btn:hover { border-color:var(--accent); color:var(--accent-soft); }
+  button.paste-btn:active { background:var(--bg-hover); }
   button.paste-btn:disabled { opacity:.5; cursor:default; }
 
   /* ---------- 视口 ---------- */
@@ -167,16 +331,31 @@
   /* 左组（导出/配置）与右组（模式/视角）把两端占满，中间留白由 flex:1 的占位吃掉 */
   #toolbar .tb-left, #toolbar .tb-right { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   #toolbar .tb-spacer { flex:1 1 0; min-width:0; }
+  /* 工具栏浮在 3D 画面上，必须自带边界：底色半透明 + 毛玻璃，再加一层投影。
+     旧实现只有半透明底色，模型高光正好落在按钮后面时按钮会"化掉"。 */
+  /* ⚠️ 第一排（导出/配置/模式/视角/语言）的按钮高度必须写死行高，不能交给 font 简写。
+     按钮默认 display:inline-block，高度 = 行盒高度 = max(文本框高度, font-size × normal 行高系数)，
+     而 `normal` 的系数**按字符各自的字体度量算**。中文界面里每个按钮都含 CJK 字形
+     （CJK 字体的 ascent+descent 明显大于 Segoe UI/Arial），行盒被撑到 17px；
+     切到英文后按钮文案全变 ASCII，只有语言按钮仍是 CJK（"中文"），行盒掉回 14px ——
+     于是中文界面下 English 按钮比别人矮 3px、底部低 1.5px，"低了一截"。
+     统一 1.4 行高（12px×1.4≈16.8px→17px）后，中英文两种文案给出同一个盒子。
+     1.4 是**无单位**值：随 font-size 缩放，窄屏/横屏的 11px 档不会又错开。 */
+  .dd-btn, .seg button, #panelToggle { line-height:1.4; }
   .dd-btn {
-    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #3a3d47; color:#cfd2dc;
-    padding:7px 14px; font-size:12px; cursor:pointer; border-radius:8px; transition:.15s;
+    background:var(--bg-bar); backdrop-filter:blur(6px); border:1px solid var(--line-3); color:#cfd2dc;
+    /* ⚠️ 只写 font-size / font-family，**不要**用 `font:` 简写：
+       简写会把 line-height 一并重置回 `normal`，上面统一的行高当场失效。 */
+    padding:7px 14px; font-size:var(--fs-12); font-family:inherit; cursor:pointer; border-radius:var(--r-md);
+    box-shadow:var(--sh-float); transition:background .15s, color .15s;
   }
-  .dd-btn:hover { color:#fff; background:#31343e; }
+  .dd-btn:hover { color:#fff; background:#31343ef2; }
+  .dd-btn:active { transform:translateY(1px); }
   .dropdown { position:relative; }
   .dd-menu {
     display:none; position:absolute; right:0; top:calc(100% + 6px); min-width:160px;
-    background:#262931f2; backdrop-filter:blur(8px); border:1px solid #3a3d47; border-radius:8px;
-    padding:5px; box-shadow:0 6px 20px #000a; z-index:7;
+    background:var(--bg-float); backdrop-filter:blur(8px); border:1px solid var(--line-3);
+    border-radius:var(--r-md); padding:5px; box-shadow:var(--sh-pop); z-index:7;
   }
   /* 工具栏左组（导出图片/导出模型/配置）的菜单向右展开：默认 right:0 会让菜单左边缘
      伸出屏幕外被裁掉。右组（模式/视角后无下拉）不受影响。 */
@@ -184,31 +363,44 @@
   .dropdown.open .dd-menu { display:block; }
   .dd-menu button {
     display:block; width:100%; text-align:left; background:transparent; border:none;
-    color:#d7d9e0; padding:8px 10px; font-size:12px; cursor:pointer; border-radius:6px;
+    color:var(--fg-2); padding:8px 10px; font-size:var(--fs-12); cursor:pointer;
+    border-radius:var(--r-sm); text-align:start;
   }
-  .dd-menu button:hover { background:#31343e; color:#fff; }
-  /* 分段按钮组：外观连在一起 */
+  .dd-menu button:hover, .dd-menu button:focus-visible { background:var(--bg-hover); color:#fff; }
+  /* 分段按钮组：外观连在一起。选中态用渐变实心，未选中 hover 只提亮背景不换色，
+     避免"指针滑过时看起来被选中"。 */
   .seg {
-    display:inline-flex; border-radius:8px; overflow:hidden;
-    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #3a3d47;
+    display:inline-flex; border-radius:var(--r-md); overflow:hidden;
+    background:var(--bg-bar); backdrop-filter:blur(6px); border:1px solid var(--line-3);
+    box-shadow:var(--sh-float);
   }
   .seg button {
-    background:transparent; border:none; border-right:1px solid #3a3d47; color:#cfd2dc;
-    padding:7px 14px; font-size:12px; cursor:pointer; transition:.15s; border-radius:0;
+    background:transparent; border:none; border-right:1px solid var(--line-3); color:#cfd2dc;
+    padding:7px 14px; font-size:var(--fs-12); font-family:inherit; cursor:pointer; transition:.15s; border-radius:0;
   }
   .seg button:last-child { border-right:none; }
-  .seg button:hover { color:#fff; background:#31343e; }
-  .seg button.active { background:linear-gradient(135deg,#ff7eb6,#ff5e8a); color:#fff; }
+  .seg button:hover:not(.active) { color:#fff; background:#ffffff14; }
+  .seg button.active {
+    background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#fff; font-weight:600;
+  }
+  /* 菜单展开时触发按钮高亮：让"哪个按钮正开着"与展开的菜单在视觉上连成一体 */
+  .dropdown.open > .dd-btn { border-color:var(--accent); color:var(--accent-soft); }
   #toolbar select {
-    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #ff7eb6; color:#ffb9d6;
-    padding:7px 10px; border-radius:8px; font-size:12px; cursor:pointer; outline:none;
+    background:var(--bg-bar); backdrop-filter:blur(6px); border:1px solid var(--accent);
+    color:var(--accent-soft); padding:7px 10px; border-radius:var(--r-md);
+    font-size:var(--fs-12); cursor:pointer;
   }
+  /* 画布底部的操作提示条：贴边时留出 Home Indicator 的安全区 */
   #modeHint {
-    position:absolute; bottom:14px; left:50%; transform:translateX(-50%);
-    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #3a3d47; color:#cfd2dc;
-    padding:6px 14px; border-radius:8px; font-size:12px; pointer-events:none; display:none;
-    white-space:nowrap;
+    position:absolute; bottom:max(14px, env(safe-area-inset-bottom)); left:50%;
+    transform:translateX(-50%);
+    background:var(--bg-bar); backdrop-filter:blur(6px); border:1px solid var(--line-3);
+    color:#cfd2dc; box-shadow:var(--sh-float);
+    padding:6px 14px; border-radius:var(--r-md); font-size:var(--fs-12);
+    pointer-events:none; display:none; white-space:nowrap;
+    animation:hintIn .18s ease;
   }
+  @keyframes hintIn { from { opacity:0; transform:translate(-50%,6px); } to { opacity:1; transform:translate(-50%,0); } }
 
 /* 轮廓控制点叠加层：仅在编辑轮廓时显示并接收指针事件 */
 #curveLayer {
@@ -225,9 +417,19 @@
 }
 
 
+  /* 拖拽图片到画布时的整屏提示：铺一层暗色不够，任何背景上都要能读出来，
+     故加毛玻璃 + 圆角边框，而不是只靠 20px 粉色大字硬压。 */
   #dropHint {
     position:absolute; inset:0; display:none; align-items:center; justify-content:center;
-    background:#0009; color:#ffb9d6; font-size:20px; font-weight:600; pointer-events:none; z-index:5;
+    background:#000000a6; backdrop-filter:blur(3px); color:var(--accent-soft);
+    font-size:18px; font-weight:600; pointer-events:none; z-index:5;
+  }
+  #dropHint::before {
+    content:""; position:absolute; inset:12px; border:2px dashed #ff7eb666; border-radius:16px;
+  }
+  #dropHint span {
+    position:relative; padding:10px 20px; border-radius:999px;
+    background:#17181cd9; border:1px solid #ff7eb666; box-shadow:var(--sh-pop);
   }
 
   /* ---------- 参数按钮（窄屏工具栏里的普通成员） ---------- */
@@ -236,19 +438,19 @@
      面板内容；并入工具栏后层级只剩一层，不再有遮挡问题。 */
   #panelToggle {
     display:none;                 /* 宽屏由下面的媒体查询打开 */
-    background:#262931cc; backdrop-filter:blur(6px); border:1px solid #3a3d47;
-    color:#cfd2dc; padding:7px 14px; font-size:12px; cursor:pointer;
-    border-radius:8px; transition:.15s; white-space:nowrap;
+    background:var(--bg-bar); backdrop-filter:blur(6px); border:1px solid var(--line-3);
+    color:#cfd2dc; padding:7px 14px; font-size:var(--fs-12); font-family:inherit; cursor:pointer;
+    border-radius:var(--r-md); box-shadow:var(--sh-float);
+    transition:background .15s, color .15s, border-color .15s; white-space:nowrap;
   }
-  #panelToggle:hover { color:#fff; background:#31343e; }
-  /* 文案由状态决定，只有这一处定义 */
-  #panelToggle .pt-close { display:none; }
-  #panelToggle .pt-open { display:inline; }
-  body.panel-open #panelToggle .pt-open { display:none; }
-  body.panel-open #panelToggle .pt-close { display:inline; }
-  /* 抽屉打开时参数按钮语义变为「收起」，并高亮，方便一眼找到出口 */
+  #panelToggle:hover { color:#fff; background:#31343ef2; }
+  #panelToggle:active { transform:translateY(1px); }
+  /* 文案**不随状态变**：旧实现是「⚙ 参数」⇄「▸ 收起」两套文案切换，
+     同一个按钮时而三个字时而四个字（含 ▸ 与 ⚙ 宽度还不同），点一下整条工具栏都在动；
+     而抽屉展开时工具条本来就淡出，这个"收起"文案几乎没人看得到。
+     现在文字固定，只换颜色表达「面板正开着」。形状与盒子尺寸也不再随状态变化。 */
   body.panel-open #panelToggle {
-    background:#31343e; border-color:#ff7eb6; color:#ffb9d6;
+    background:var(--bg-hover); border-color:var(--accent); color:var(--accent-soft);
   }
 
   /* ---------- 抽屉折叠把手（贴在抽屉右缘，窄屏可见） ---------- */
@@ -262,15 +464,17 @@
     display:none; position:fixed; left:var(--panel-w, 26px); top:50%;
     transform:translateY(-50%); z-index:9;
     width:26px; height:64px; padding:0;
-    border:1px solid #3a3d47; border-left:none;
-    border-radius:0 10px 10px 0;
-    background:#262931e6; backdrop-filter:blur(8px); color:#cfd2dc;
-    font-size:12px; line-height:1; cursor:pointer;
-    transition:left .22s ease, border-color .15s, color .15s;
+    border:1px solid var(--line-3); border-left:none;
+    border-radius:0 var(--r-lg) var(--r-lg) 0;
+    background:var(--bg-float); backdrop-filter:blur(8px); color:#cfd2dc;
+    box-shadow:var(--sh-float);
+    font-size:var(--fs-12); line-height:1; cursor:pointer;
+    transition:left .22s ease, background .15s, border-color .15s, color .15s;
     -webkit-tap-highlight-color:transparent;
   }
-  #panelHandle:hover { background:#31343e; color:#fff; }
-  body.panel-open #panelHandle { border-color:#ff7eb6; color:#ffb9d6; }
+  #panelHandle:hover { background:var(--bg-hover); color:#fff; }
+  #panelHandle:active { background:var(--bg-chip); }
+  body.panel-open #panelHandle { border-color:var(--accent); color:var(--accent-soft); }
   /* 箭头随状态翻转：收起时指右(拉出)，展开时指左(推回) */
   #panelHandle .ph-open { display:inline; }
   #panelHandle .ph-close { display:none; }
@@ -295,12 +499,18 @@
     .row input[type=color] { width:56px; height:34px; }
     .row select { padding:9px 10px; font-size:13px; }
     .row .val { font-size:12px; }
+    /* 标签已是命中区（htmlFor 绑定），把它撑到整行高，手指不必精确点中 12px 高的文字 */
+    .row label { min-height:34px; display:flex; align-items:center; }
     .btn { padding:12px 0; }
     .dd-btn, .seg button { padding:10px 14px; }
     .dd-menu button { padding:12px 12px; }
+    .btn-mini, .slot-row button { min-height:34px; padding:6px 12px; }
+    #slotName { padding:8px; }
+    .btn-cap { margin-top:14px; }
     button.paste-btn { width:34px; }
     .dz-wrap { padding-left:42px; }
     .dropzone { padding:16px 12px; }
+    .dropzone .clear { width:26px; height:26px; line-height:26px; top:4px; right:6px; }
     summary { padding:13px 12px; }
     #about a { display:inline-block; padding:4px 0; }
   }
@@ -360,18 +570,21 @@
     #panelHandle { height:48px; }
   }
 
-  /* 系统开了「减少动态效果」就不要抽屉滑入动画 */
+  /* 系统开了「减少动态效果」就不要抽屉滑入动画与按压反馈 */
   @media (prefers-reduced-motion: reduce) {
     #panel { transition:none; }
     #panelHandle { transition:none; }
     #toolbar { transition:none; }
     .toast { transition:none; }
+    #modeHint { animation:none; }
+    .btn:active, .dd-btn:active, .seg button:active, #panelToggle:active, .btn-mini:active { transform:none; }
+    .row input[type=range]::-webkit-slider-thumb { transition:none; }
   }
 
   /* ---------- 关于页脚 ---------- */
   #about {
-    margin-top:14px; padding:12px 10px 4px; border-top:1px solid #2c2f38;
-    font-size:11px; color:#8b8fa0; line-height:1.8;
+    margin-top:14px; padding:12px 10px 4px; border-top:1px solid var(--line);
+    font-size:var(--fs-11); color:var(--fg-4); line-height:1.8;
   }
   #about .about-title { color:#cfd2dc; font-weight:600; margin-bottom:4px; }
   #about a { color:#7fb0ff; text-decoration:none; word-break:break-all; }
@@ -390,29 +603,30 @@
   .tf-box {
     width:min(680px, calc(100vw - 24px)); max-height:calc(100dvh - 32px);
     display:flex; flex-direction:column;
-    background:#22252d; border:1px solid #3a3d47; border-radius:14px;
-    box-shadow:0 20px 60px #000c; overflow:hidden;
+    background:#22252d; border:1px solid var(--line-3); border-radius:var(--r-xl);
+    box-shadow:0 20px 60px #000000c7; overflow:hidden;
   }
-  .tf-head { padding:14px 16px 10px; border-bottom:1px solid #2c2f38; }
-  .tf-head h2 { margin:0 0 6px; font-size:15px; color:#ffb9d6; font-weight:600; }
-  .tf-head p { margin:0; font-size:12px; color:#a6aab8; line-height:1.6; }
-  .tf-head .tf-dim { color:#ff9db8; font-variant-numeric:tabular-nums; }
+  .tf-head { padding:14px 16px 10px; border-bottom:1px solid var(--line); }
+  .tf-head h2 { margin:0 0 6px; font-size:15px; color:var(--accent-soft); font-weight:600; }
+  .tf-head p { margin:0; font-size:var(--fs-12); color:var(--fg-3); line-height:1.6; }
+  .tf-head .tf-dim { color:var(--accent-dim); font-variant-numeric:tabular-nums; }
   .tf-body { padding:12px 16px; overflow-y:auto; }
   /* 裁剪：外层是显示框，内层 canvas 按「适合」等比缩放，裁剪框用 CSS 百分比定位，
      故拖拽换算只需在显示坐标里做，与图片真实像素解耦。 */
   .tf-stage {
     position:relative; width:100%; height:min(46vh, 340px);
-    background:#14161b; border-radius:10px; overflow:hidden;
+    background:var(--bg-sunken); border-radius:var(--r-lg); overflow:hidden;
     touch-action:none; user-select:none; -webkit-user-select:none; cursor:crosshair;
   }
   .tf-stage canvas { position:absolute; left:0; top:0; width:100%; height:100%; display:block; }
   .tf-crop {
-    position:absolute; box-sizing:border-box; border:1px solid #ff7eb6;
+    position:absolute; box-sizing:border-box; border:1px solid var(--accent);
     box-shadow:0 0 0 9999px #0000008c; cursor:move;
   }
   .tf-crop .tf-h {
     position:absolute; width:16px; height:16px; margin:-8px 0 0 -8px;
-    background:#ff7eb6; border-radius:50%;
+    background:var(--accent); border-radius:50%;
+    box-shadow:0 0 0 1px #00000059;   /* 深色图片上也要能看见手柄边界 */
   }
   /* 八个手柄：四角 + 四边中点。用 data-dir 定位，避免 8 条规则各写一份坐标。 */
   .tf-crop .tf-h[data-dir=nw] { left:0;    top:0;    }
@@ -426,15 +640,15 @@
   .tf-cts { margin-top:10px; }
   .tf-cts .row label { flex:0 0 88px; }
   /* 图内短提示：解释「裁剪越大、输出越大」，可用输出分辨率那行看效果 */
-  .tf-hint { margin-top:8px; font-size:11px; color:#7d8194; line-height:1.6; }
-  .tf-out { margin-top:6px; font-size:12px; color:#8b8fa0; line-height:1.7; }
+  .tf-hint { margin-top:8px; font-size:var(--fs-11); color:var(--fg-4); line-height:1.6; }
+  .tf-out { margin-top:6px; font-size:var(--fs-12); color:var(--fg-4); line-height:1.7; }
   .tf-out b { color:#cfd2dc; font-variant-numeric:tabular-nums; }
   /* 超出上限不再禁用「应用」，只是把数字标红，让用户带着预期做取舍 */
-  .tf-out.bad b { color:#ffb26b; }
-  .tf-out.done { color:#7fd3a0; }
-  .tf-out.done b { color:#a9e8c3; }
+  .tf-out.bad b { color:var(--warn); }
+  .tf-out.done { color:var(--ok); }
+  .tf-out.done b { color:var(--ok-soft); }
   .tf-foot {
-    display:flex; gap:8px; padding:12px 16px 14px; border-top:1px solid #2c2f38;
+    display:flex; gap:8px; padding:12px 16px 14px; border-top:1px solid var(--line);
   }
   .tf-foot .btn { margin:0; width:auto; flex:1; }
   @media (pointer: coarse) {
@@ -454,7 +668,7 @@
 <body>
 <div id="app">
   <aside id="panel">
-    <h1 data-i18n="app.title">3D MousePad <span>Studio</span></h1>
+    <h1><span data-i18n="app.titleA">3D MousePad</span><span class="hl" data-i18n="app.titleB">Studio</span></h1>
 
     <details open>
       <summary data-i18n="panel.texture">贴图</summary>
@@ -503,7 +717,7 @@
         <div class="hint" data-i18n="save.autosaveHint">参数改动会自动存为草稿，刷新页面后恢复。</div>
         <div class="row">
           <input type="text" id="slotName" data-i18n-placeholder="save.namePh" placeholder="方案名称">
-          <button id="slotSave" type="button" data-i18n="save.btn">保存</button>
+          <button id="slotSave" class="btn-mini" type="button" data-i18n="save.btn">保存</button>
         </div>
         <div id="slotList"></div>
       </div>
@@ -537,8 +751,8 @@
       <div class="tb-left">
         <!-- 窄屏：面板收进抽屉，这个按钮开合抽屉；宽屏下由 CSS 隐藏。
              放在「配置」左边，与其它工具按钮同排，不再是浮在画布上的固定层。 -->
-        <button id="panelToggle" type="button" data-i18n-aria="aria.openPanel" aria-label="打开参数面板" aria-expanded="false"
-                title="参数面板"><span class="pt-open" data-i18n="tb.params">⚙ 参数</span><span class="pt-close" data-i18n="tb.collapse">▸ 收起</span></button>
+        <button id="panelToggle" type="button" data-i18n="tb.params" data-i18n-aria="aria.openPanel" aria-label="打开参数面板" aria-expanded="false"
+                title="参数面板">⚙ 参数</button>
         <div class="dropdown" id="ddExportImg">
           <button class="dd-btn" data-i18n="tb.exportImg">导出图片 ▾</button>
           <div class="dd-menu">
@@ -563,6 +777,10 @@
           </div>
         </div>
         <input type="file" id="cfgFile" accept=".json,.zip,application/json,application/zip" hidden>
+        <!-- 语言切换：只改文案，不动任何参数与几何。放「配置」右边，与其它全局动作同组，
+             不再夹在两组分段按钮中间。 -->
+        <button id="langBtn" class="dd-btn" type="button" data-i18n="lang.switch"
+                title="Switch interface language / 切换界面语言">English</button>
       </div>
       <div class="tb-spacer"></div>
       <div class="tb-right">
@@ -571,9 +789,6 @@
           <button data-mode="t1" data-i18n="mode.t1">主贴图</button>
           <button data-mode="t2" data-i18n="mode.t2">腕托贴图</button>
         </div>
-          <!-- 语言切换：只改文案，不动任何参数与几何 -->
-        <button id="langBtn" class="dd-btn" type="button" data-i18n="lang.switch"
-                title="Switch interface language / 切换界面语言">English</button>
       <div class="seg" id="viewSeg">
           <button data-view="persp" data-i18n="view.persp">透视</button>
           <button data-view="top" data-i18n="view.top">顶视</button>
@@ -582,7 +797,7 @@
       </div>
     </div>
     <div id="modeHint"></div>
-    <div id="dropHint" data-i18n="hint.drop">松开以上传图片</div>
+    <div id="dropHint"><span data-i18n="hint.drop">松开以上传图片</span></div>
   </main>
 </div>
 
@@ -931,6 +1146,9 @@ function tfUpdate() {
   tfSyncEdge();
   document.getElementById('tfSizeVal').textContent = document.getElementById('tfSize').value;
   document.getElementById('tfQualityVal').textContent = document.getElementById('tfQuality').value;
+  // 弹窗里的两个滑条不经过 slider()，填充段要在这里单独刷（见 paintRange）
+  paintRange(document.getElementById('tfSize'));
+  paintRange(document.getElementById('tfQuality'));
 }
 
 function tfClose() {
@@ -2076,6 +2294,25 @@ function applyParamThen(key, v, extra) {
   const noChange = Object.keys(P_DEFAULTS).filter(k => !PARAM_SCHEMA[k] || !PARAM_SCHEMA[k].onChange);
   if (noChange.length) console.warn('[参数变更] 以下参数缺少 onChange，已按 rebuild 处理：', noChange);
 }
+// 控件 id 生成器：label 与控件用 htmlFor/id 绑定后，标签才是一个可点的命中区
+// （此前每行左侧 64px × 整行高的区域点下去什么都不会发生，触屏下纯属浪费）。
+// 顺带把 label 与控件的关系暴露给读屏器。⚠️ id 必须唯一，故走自增序号。
+let ctlSeq = 0;
+function bindLabel(lb, ctl) {
+  ctl.id = ctl.id || ('ctl' + (++ctlSeq));
+  lb.htmlFor = ctl.id;
+  return ctl;
+}
+// 把当前值写进 CSS 变量 --fill，滑条据此画"已填充段"。
+// ⚠️ 必须与取值同步的所有入口一起调用（slider 的 oninput / uiSyncers / syncTexUI），
+// 漏一处就只表现为那段填充色滞后，读数与几何都仍然正确 —— 很难被注意到。
+function paintRange(inp) {
+  const min = parseFloat(inp.min), max = parseFloat(inp.max);
+  const v = parseFloat(inp.value);
+  const pct = (isFinite(min) && isFinite(max) && max > min && isFinite(v))
+    ? ((v - min) / (max - min)) * 100 : 0;
+  inp.style.setProperty('--fill', pct.toFixed(2) + '%');
+}
 // label 传**文案 key** 而不是字面中文：切换语言时要能整体重刷一遍（见 applyI18n）。
 // note：可选的悬停说明（title），同样传 key，用于交代"参数值 ≠ 成品尺寸"这类换算关系。
 function slider(parent, labelKey, min, max, step, get, set, noteKey, paramKey) {
@@ -2089,20 +2326,22 @@ function slider(parent, labelKey, min, max, step, get, set, noteKey, paramKey) {
   }
   const inp = document.createElement('input');
   inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
+  bindLabel(lb, inp);
   // 登记滑条上界，供几何入口的参数闸门（geoClampOf）对齐 —— 两者必须同源，
   // 否则会出现"滑条到头了 P 仍可越界"或"一碰滑条就被判越界"的双向错位。
   if (paramKey) sliderMaxOf[paramKey] = max;
   const val = document.createElement('span'); val.className = 'val'; val.textContent = get();
+  paintRange(inp);
   // P1-3：oninput 期间进入 LOD（set 回调里的 rebuild 会用低精度几何），
   // 松手（change）时由 commitLOD() 切回全质量重建一次。
-  inp.oninput = () => { enterLOD(); set(parseFloat(inp.value)); val.textContent = inp.value; };
+  inp.oninput = () => { enterLOD(); set(parseFloat(inp.value)); val.textContent = inp.value; paintRange(inp); };
   // 键盘微调兜底：Chrome 下方向键会同时派发 input 与 change，但其它浏览器
   // 与"按住不放"等边界不保证，故再补 keyup / blur 兜一次，避免几何停在低精度。
   // commitLOD() 内有 lodDirty 守卫，重复调用不会白跑全质量重建。
   inp.onchange = commitLOD;
   inp.addEventListener('keyup', commitLOD);
   inp.addEventListener('blur', commitLOD);
-  uiSyncers.push(() => { inp.value = get(); val.textContent = get(); });
+  uiSyncers.push(() => { inp.value = get(); val.textContent = get(); paintRange(inp); });
   row.append(lb, inp, val); parent.appendChild(row);
   return inp;
 }
@@ -2111,9 +2350,13 @@ function colorRow(parent, labelKey, get, set) {
   const lb = document.createElement('label');
   lb.dataset.i18n = labelKey; lb.textContent = T(labelKey);
   const inp = document.createElement('input'); inp.type = 'color'; inp.value = get();
-  inp.oninput = () => set(inp.value);
-  uiSyncers.push(() => { inp.value = get(); });
-  row.append(lb, inp); parent.appendChild(row);
+  bindLabel(lb, inp);
+  // 色值读数：改色时能直接抄走十六进制（这个工具的配色往往要复用到别的软件里），
+  // 不必再开一次系统取色器去对 RGB。
+  const hex = document.createElement('span'); hex.className = 'hex'; hex.textContent = inp.value;
+  inp.oninput = () => { set(inp.value); hex.textContent = inp.value; };
+  uiSyncers.push(() => { inp.value = get(); hex.textContent = get(); });
+  row.append(lb, inp, hex); parent.appendChild(row);
   return row;
 }
 function selectRow(parent, labelKey, opts, get, set) {
@@ -2126,6 +2369,7 @@ function selectRow(parent, labelKey, opts, get, set) {
     o.dataset.i18n = tKey; sel.appendChild(o);
   });
   sel.value = get();
+  bindLabel(lb, sel);
   sel.onchange = () => set(sel.value);
   uiSyncers.push(() => { sel.value = get(); });
   row.append(lb, sel); parent.appendChild(row);
@@ -2136,6 +2380,7 @@ function checkRow(parent, labelKey, get, set, paramKey) {
   const lb = document.createElement('label');
   lb.dataset.i18n = labelKey; lb.textContent = T(labelKey);
   const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = get();
+  bindLabel(lb, inp);
   // 记下参数名：setCurveEdit() 要按它找回「编辑轮廓」复选框（按文案找会在切语言后失效）
   if (paramKey) inp.dataset.param = paramKey;
   inp.onchange = () => set(inp.checked);
@@ -2143,14 +2388,18 @@ function checkRow(parent, labelKey, get, set, paramKey) {
   row.append(lb, inp); parent.appendChild(row);
   return row;
 }
+// 行内按钮（如"清空统计"）：与按钮同款外观，只是行内尺寸
 function btnRow(parent, labelKey, textKey, onClick) {
   const row = document.createElement('div'); row.className = 'row';
   const lb = document.createElement('label');
   lb.dataset.i18n = labelKey; lb.textContent = T(labelKey);
   const b = document.createElement('button');
+  b.className = 'btn-mini'; b.style.flex = '1';
   b.dataset.i18n = textKey; b.textContent = T(textKey);
-  b.style.cssText = 'flex:1;padding:5px 10px;border:0;border-radius:5px;background:#3a4150;color:#e6e9ef;cursor:pointer';
   b.onclick = onClick;
+  // 与其他行式控件一致：走 bindLabel 让左侧标签也变成命中区，
+  // 否则这行保留 64px × 整行高的死区（见 Agents.md「所有行式控件都要走它」）。
+  bindLabel(lb, b);
   row.append(lb, b); parent.appendChild(row);
   return b;
 }
@@ -2185,6 +2434,7 @@ function syncTexUI(key) {
   texUI[key].forEach(({ inp, prop, val }) => {
     inp.value = tp[prop];
     if (val) val.textContent = typeof tp[prop] === 'number' ? +tp[prop].toFixed(3) : tp[prop];
+    paintRange(inp);   // 画布拖拽 / 滚轮改了值之后，滑条的填充段要跟上
   });
 }
 texControls(document.getElementById('tex1Ctrls'), 't1', 'tex.group1');
@@ -2218,9 +2468,9 @@ texControls(document.getElementById('tex2Ctrls'), 't2', 'tex.group2');
     const editRow = classicRows[1].closest('.row');
     const mkBtn = (textKey, titleKey, onClick) => {
       const b = document.createElement('button');
+      b.className = 'btn-mini';
       b.dataset.i18n = textKey; b.textContent = T(textKey);
       b.dataset.i18nTitle = titleKey; b.title = T(titleKey);
-      b.style.cssText = 'padding:3px 10px;border:0;border-radius:5px;background:#3a4150;color:#e6e9ef;cursor:pointer;font-size:12px';
       b.onclick = onClick;
       editRow.appendChild(b);
       return b;
@@ -2318,37 +2568,55 @@ texControls(document.getElementById('tex2Ctrls'), 't2', 'tex.group2');
     const inp = document.createElement('input'); inp.type = 'text';
     inp.dataset.i18nPlaceholder = 'ctl.cfgNamePh'; inp.placeholder = T('ctl.cfgNamePh');
     inp.value = P.cfgName || '';
-    inp.style.flex = '1'; inp.style.minWidth = '0';
+    bindLabel(lb, inp);
     inp.oninput = () => applyParam('cfgName', inp.value);
     uiSyncers.push(() => { inp.value = P.cfgName || ''; });
     row.append(lb, inp); el.appendChild(row);
   }
+  /* 导出入口按「产物」分三组：图片 / 3D 模型 / 配置文件。
+     旧实现是 8 个等权重全宽按钮竖排，既分不出主次，也把工具栏里已有的同名入口
+     在面板里重复了一遍；现在两个图片出口并排成主按钮，模型与配置收成次级按钮，
+     组间用小标题分隔，扫一眼就知道该点哪个。
+     ⚠️ 按钮文案与 id 一律不动：冒烟脚本按文案全局找按钮（见 smoke-export）。 */
+  const cap = key => {
+    const c = document.createElement('div');
+    c.className = 'btn-cap'; c.dataset.i18n = key; c.textContent = T(key);
+    el.appendChild(c);
+  };
+  const imgGrid = document.createElement('div'); imgGrid.className = 'btn-grid';
+  el.appendChild(imgGrid);
   const btn = document.createElement('button');
   btn.className = 'btn'; btn.dataset.i18n = 'btn.exportPreview';
   btn.textContent = T('btn.exportPreview');
   btn.onclick = exportPNG;
-  el.appendChild(btn);
+  imgGrid.appendChild(btn);
   const mbtn = document.createElement('button');
   mbtn.className = 'btn'; mbtn.dataset.i18n = 'btn.exportModelPNG';
   mbtn.textContent = T('btn.exportModelPNG');
-  mbtn.style.marginTop = '6px';
   mbtn.onclick = exportModelPNG;
-  el.appendChild(mbtn);
+  imgGrid.appendChild(mbtn);
   // 3D 模型导出
+  cap('export.capModel');
+  const mdlStack = document.createElement('div'); mdlStack.className = 'btn-stack';
+  el.appendChild(mdlStack);
   const mk3d = (textKey, kind) => {
     const b = document.createElement('button');
-    b.className = 'btn'; b.dataset.i18n = textKey;
-    b.textContent = T(textKey); b.style.marginTop = '6px';
+    b.className = 'btn ghost'; b.dataset.i18n = textKey;
+    b.textContent = T(textKey);
     b.onclick = () => exportModel3D(kind);
-    el.appendChild(b);
+    mdlStack.appendChild(b);
   };
   mk3d('btn.exportGLB', 'glb');
   mk3d('btn.exportSTL', 'stl');
   mk3d('btn.exportOBJ', 'obj');
   // 配置导入 / 导出
-  const mkBtn = (textKey, fn) => {
-    const b = document.createElement('button'); b.className = 'btn'; b.dataset.i18n = textKey;
-    b.textContent = T(textKey); b.style.marginTop = '6px'; b.onclick = fn; el.appendChild(b); return b;
+  cap('export.capCfg');
+  const cfgStack = document.createElement('div'); cfgStack.className = 'btn-stack';
+  el.appendChild(cfgStack);
+  const mkBtn = (textKey, fn, cls) => {
+    const b = document.createElement('button');
+    b.className = cls || 'btn ghost'; b.dataset.i18n = textKey;
+    b.textContent = T(textKey); b.onclick = fn; cfgStack.appendChild(b); return b;
   };
   mkBtn('btn.exportCfgJson', exportConfigJSON);
   mkBtn('btn.exportCfgZip', exportConfigZip);
@@ -2358,8 +2626,7 @@ texControls(document.getElementById('tex2Ctrls'), 't2', 'tex.group2');
     if (imp.files[0]) importConfigFile(imp.files[0]).catch(e => toast(T('cfg.importFailed', { msg: e.message }), 'err'));
     imp.value = '';
   };
-  const impBtn = mkBtn('btn.importCfg', () => imp.click());
-  impBtn.style.background = '#2f6f4f';
+  mkBtn('btn.importCfg', () => imp.click(), 'btn ok');
   el.appendChild(imp);
 }
 
@@ -2375,19 +2642,28 @@ texControls(document.getElementById('tex2Ctrls'), 't2', 'tex.group2');
 
 /* --- 右上角主工具栏：导出图片 / 复制 / 配置 --- */
 (function bindTopbar() {
-  // 下拉开关
+  // 下拉开合状态集中在一处：class 与 aria-expanded 必须同步，
+  // 否则读屏用户听到的是"已折叠"而屏幕上一个菜单正开着。
+  const closeAllDD = () => {
+    document.querySelectorAll('#toolbar .tb-left .dropdown.open').forEach(o => {
+      o.classList.remove('open');
+      const b = o.querySelector('.dd-btn'); if (b) b.setAttribute('aria-expanded', 'false');
+    });
+  };
   document.querySelectorAll('#toolbar .tb-left .dropdown').forEach(dd => {
     const btn = dd.querySelector('.dd-btn');
+    btn.setAttribute('aria-haspopup', 'true');
+    btn.setAttribute('aria-expanded', 'false');
     btn.addEventListener('click', e => {
       e.stopPropagation();
       const open = dd.classList.contains('open');
-      document.querySelectorAll('#toolbar .tb-left .dropdown.open').forEach(o => o.classList.remove('open'));
-      if (!open) dd.classList.add('open');
+      closeAllDD();
+      if (!open) { dd.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
     });
     dd.querySelector('.dd-menu').addEventListener('click', e => {
       const act = e.target.getAttribute('data-act');
       if (!act) return;
-      dd.classList.remove('open');
+      closeAllDD();
       if (act === 'preview') exportPNG();
       else if (act === 'model') exportModelPNG();
       else if (act === 'glb' || act === 'stl' || act === 'obj') exportModel3D(act);
@@ -2396,8 +2672,12 @@ texControls(document.getElementById('tex2Ctrls'), 't2', 'tex.group2');
       else if (act === 'import') document.getElementById('cfgFile').click();
     });
   });
-  document.addEventListener('click', () => {
-    document.querySelectorAll('#toolbar .tb-left .dropdown.open').forEach(o => o.classList.remove('open'));
+  document.addEventListener('click', closeAllDD);
+  // Esc 收起下拉：菜单展开时按 Esc 是通用预期，此前只有"点别处"一条出路
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (!document.querySelector('#toolbar .tb-left .dropdown.open')) return;
+    closeAllDD();
   });
   // 配置文件导入（复用已有 importConfigFile）
   const cfgFile = document.getElementById('cfgFile');
@@ -2410,7 +2690,17 @@ texControls(document.getElementById('tex2Ctrls'), 't2', 'tex.group2');
 /* ================= 上传 ================= */
 function bindDropzone(dzId, fileId, onImg) {
   const dz = document.getElementById(dzId), fi = document.getElementById(fileId);
+  // 上传区是 div，只绑 onclick 的话键盘完全够不着：补 tabindex + role + 回车/空格，
+  // 让它与 <button> 一样可聚焦、可触发（⚠️ dz.innerHTML 会被重写，
+  // 但重写的是子节点，dz 自身的属性不受影响）。
+  dz.tabIndex = 0;
+  dz.setAttribute('role', 'button');
   dz.onclick = e => { if (!e.target.classList.contains('clear')) fi.click(); };
+  dz.onkeydown = e => {
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    if (e.target !== dz) return;                 // 别抢子节点（清除按钮）的回车
+    e.preventDefault(); fi.click();
+  };
   fi.onchange = () => { if (fi.files[0]) loadImage(fi.files[0], onImg, dz); fi.value = ''; };
   // 「粘贴」按钮：主动读取剪贴板图片填入对应槽位（不依赖聚焦/右键，独立于预览区）
   const pbtn = document.getElementById('paste' + dzId.slice(2));
@@ -2451,7 +2741,13 @@ function loadImage(file, onImg, dz) {
 /* 轻量 toast 提示（替代 alert）：type = 'ok' | 'err' | '' */
 function toast(msg, type = '', ms = 2600) {
   let wrap = document.getElementById('toast-wrap');
-  if (!wrap) { wrap = document.createElement('div'); wrap.id = 'toast-wrap'; document.body.appendChild(wrap); }
+  if (!wrap) {
+    wrap = document.createElement('div'); wrap.id = 'toast-wrap';
+    // toast 是本应用唯一的用户反馈通道，读屏必须能播报（否则失败信息对盲用户等于不存在）
+    wrap.setAttribute('role', 'status');
+    wrap.setAttribute('aria-live', 'polite');
+    document.body.appendChild(wrap);
+  }
   const el = document.createElement('div');
   el.className = 'toast' + (type ? ' ' + type : '');
   el.textContent = msg;
@@ -3621,8 +3917,16 @@ const panelBtns = [
   [panelHandle, 'aria.expandPanel', 'aria.closePanel'],
 ];
 
+// ⚠️ 必须显式给 tabindex：抽屉打开时工具栏已 pointer-events:none，而「点别处收起抽屉」
+//    走的是 document 上的 pointerdown —— 键盘没有 pointer 事件，够不着这条路。
+//    不给 Tab 序位的话，键盘用户打开抽屉后 Esc 是唯一出口，而 Esc 不是人人都会试。
+//    本函数经 applyI18n() 调用，语言切换后也会重算。
+function syncPanelToggleTab() {
+  panelToggle.tabIndex = (getComputedStyle(panelToggle).display === 'none' || panelOpen()) ? -1 : 0;
+}
 function setPanelOpen(on) {
   document.body.classList.toggle('panel-open', on);
+  syncPanelToggleTab();
   // 让辅助技术感知抽屉状态（两个按钮都是 aria-expanded 的持有者）
   for (const [btn, openKey, closeKey] of panelBtns) {
     btn.setAttribute('aria-expanded', on ? 'true' : 'false');
@@ -3649,7 +3953,7 @@ function applyI18n() {
   document.documentElement.lang = getLang() === 'zh' ? 'zh-CN' : 'en';
   // 动态文案：下拉菜单的 option、滑条悬停说明等，创建时已登记
   for (const n of i18nNodes) { if (n.el.isConnected && I18N_ATTR[n.kind]) I18N_ATTR[n.kind](n.el); }
-  setPanelOpen(panelOpen());          // 抽屉按钮的 aria-label 也要跟着换
+  setPanelOpen(panelOpen());          // 抽屉按钮的 aria-label / tabindex 也要跟着重算
   if (dragMode !== 'view') setDragMode(dragMode, curveEdit);   // 模式提示条
   if (curveEdit) modeHint.textContent = T('hint.curveMode');
   refreshSlotUI();
@@ -3781,14 +4085,16 @@ window.addEventListener('orientationchange', () => setTimeout(resize, 60));
 
 // 语言按钮：只切文案，不动参数与几何
 {
-  // ⚠️ 按钮自身的文案**不要**手动写：它带 data-i18n="lang.switch"，
-  //    applyI18n() 会按当前语言取 —— 而 lang.switch 在每种语言里写的都是"另一种语言的名字"
-  //    （中文界面显示 English，英文界面显示 中文），手动赋值反而会与这次刷新抢先后。
+  // 按钮文案：带 data-i18n="lang.switch"，applyI18n() 会按当前语言取。
+  // ⚠️ langSwitchLabel() 与词典里的 lang.switch 同源（见 src/i18n.js），
+  //    这里显式再写一次是为了「先定语言再建 DOM」的顺序：initLang() 早于 DOM 就绪，
+  //    按钮的静态文案是 HTML 里写死的，靠这一行在绑定事件时对齐到当前语言。
   const lb = document.getElementById('langBtn');
+  lb.textContent = langSwitchLabel();   // 对齐到 initLang() 定下的当前语言
   lb.onclick = () => {
     setLang(otherLang(), window.localStorage);
     applyI18n();
-  };
+  }
 }
 // 方案槽位的「保存」按钮
 document.getElementById('slotSave').onclick = saveCurrentSlot;
@@ -3877,7 +4183,7 @@ if (restoredDraft) setTimeout(() => toast(T('save.restored'), 'ok', 5000), 300);
       </div>
       <div class="tf-cts">
         <div class="row">
-          <label data-i18n="tf.aspect">裁剪比例</label>
+          <label for="tfAspect" data-i18n="tf.aspect">裁剪比例</label>
           <select id="tfAspect">
             <option value="free" data-i18n="tf.aspectFree">自由</option>
             <option value="1">1 : 1</option>
@@ -3890,20 +4196,20 @@ if (restoredDraft) setTimeout(() => toast(T('save.restored'), 'ok', 5000), 300);
           <button class="btn ghost" id="tfFull" type="button" data-i18n="tf.selectAll" style="flex:0 0 84px;margin:0;padding:6px 0;">全选</button>
         </div>
         <div class="row">
-          <label data-i18n="tf.longEdge">长边裁剪</label>
+          <label for="tfSize" data-i18n="tf.longEdge">长边裁剪</label>
           <input type="range" id="tfSize" min="16" max="4096" step="1" value="4096">
           <span class="val" id="tfSizeVal">4096</span>
           <button class="btn ghost" id="tfOrig" type="button" data-i18n="tf.orig" style="flex:0 0 66px;margin:0;padding:6px 0;">1 : 1</button>
         </div>
         <div class="row">
-          <label data-i18n="tf.format">输出格式</label>
+          <label for="tfFormat" data-i18n="tf.format">输出格式</label>
           <select id="tfFormat">
             <option value="image/png" data-i18n="tf.formatPng">PNG（无损，保留透明）</option>
             <option value="image/jpeg" data-i18n="tf.formatJpeg">JPEG（体积更小）</option>
           </select>
         </div>
         <div class="row" id="tfQualityRow">
-          <label data-i18n="tf.quality">JPEG 质量</label>
+          <label for="tfQuality" data-i18n="tf.quality">JPEG 质量</label>
           <input type="range" id="tfQuality" min="40" max="100" step="5" value="90">
           <span class="val" id="tfQualityVal">90</span>
         </div>

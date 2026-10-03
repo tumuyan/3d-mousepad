@@ -9,7 +9,9 @@
 const DICT = {
   zh: {
     // —— 面板骨架 ——
-    'app.title': '3D MousePad Studio',
+    // ⚠️ 标题拆成两段而不是一整句 + <span> 高亮：applyI18n() 对 data-i18n 走
+    //    textContent 赋值，会把高亮用的 <span> 一并冲掉，粉色强调只在首屏存在。
+    'app.titleA': '3D MousePad', 'app.titleB': 'Studio',
     'panel.texture': '贴图',
     'panel.shape': '鼠标垫外形',
     'panel.wrist': '腕托',
@@ -81,6 +83,8 @@ const DICT = {
     'btn.exportOBJ': '导出模型 (OBJ)',
     'btn.exportCfgJson': '导出配置 (JSON)', 'btn.exportCfgZip': '导出配置 (ZIP，含贴图)',
     'btn.importCfg': '导入配置 (JSON / ZIP)',
+    // 导出区分组的小标题（分组是为了让 8 个导出入口有主次，见 index.html 的 .btn-cap）
+    'export.capModel': '3D 模型', 'export.capCfg': '配置文件',
 
     // —— 调试 ——
     'ctl.dbgRebuild': 'rebuild 耗时打到控制台', 'ctl.dbgReset': '统计清零', 'btn.clear': '清空',
@@ -180,7 +184,7 @@ const DICT = {
   },
 
   en: {
-    'app.title': '3D MousePad Studio',
+    'app.titleA': '3D MousePad', 'app.titleB': 'Studio',
     'panel.texture': 'Texture',
     'panel.shape': 'Pad Shape',
     'panel.wrist': 'Wrist Rest',
@@ -246,6 +250,7 @@ const DICT = {
     'btn.exportOBJ': 'Export OBJ',
     'btn.exportCfgJson': 'Export config (JSON)', 'btn.exportCfgZip': 'Export config (ZIP, with textures)',
     'btn.importCfg': 'Import config (JSON / ZIP)',
+    'export.capModel': '3D model', 'export.capCfg': 'Config file',
 
     'ctl.dbgRebuild': 'Log rebuild timings to console', 'ctl.dbgReset': 'Reset stats', 'btn.clear': 'Clear',
     'dbg.cleared': '[rebuild] stats cleared',

@@ -86,6 +86,28 @@
 登记。`data-i18n-html` 只用于含 `<b>/<small>` 的常量文案，**不要**拿它渲染外部数据。
 ⚠️ 段落里若嵌着运行时数字（如 `#tfDim`），整段不能进词典 —— 否则切语言会把承载数字的
 `<span>` 一起冲掉。拆成"数字前 / 中 / 后"三段纯文本。
+⚠️ **同一规则对"高亮用的子元素"同样成立**：`applyI18n()` 对 `data-i18n` 走的是
+`el.textContent = T(key)`，会把元素内原有的 `<span>` 一起冲掉。故标题拆成
+`app.titleA` / `app.titleB` 两段各自带 key，而不是"整句一个 key + 内嵌 `<span>` 高亮"
+（后者的高亮只在首屏存在，`applyI18n()` 一跑就没了）。
+
+## 2.6 样式与视觉（design token）
+
+`:root` 里的自定义属性是**颜色 / 圆角 / 阴影 / 字号的唯一出处**（`--bg-*` `--line-*` `--fg-*`
+`--accent*` `--r-*` `--sh-*` `--fs-*`）。⚠️ 新增样式**不得**再写裸十六进制：
+改主题前同样的"次级按钮"在 `<style>` 与 JS 内联样式里存了三份（`#3a4150` 写 3 遍、
+`#3a3d47` 写 9 遍），换色只能全局搜。同理，行内按钮一律用 `.btn-mini` 而不是
+`el.style.cssText` 写死一套配色。
+
+| 约定 | 理由 |
+| --- | --- |
+| `:root { color-scheme: dark }` | 原生控件（滚动条 / 下拉列表 / 复选框）跟随暗色，否则亮色刺眼 |
+| `--fg-4`（#8b8fa0）是最浅的辅助文字档 | 在卡片底色上 4.5:1（AA）；旧值 #6f7382 只有 3.07:1，11px 的 `.hint` / `.tf-hint` 不达标 |
+| `:where(button,summary,select,input,a,[tabindex]):focus-visible` 统一 2px 品牌色描边 | 全站原本**没有一条** `:focus-visible`，键盘用户看不出焦点位置；用 `:focus-visible` 而非 `:focus` 是为了不干扰鼠标点击 |
+| ⚠️ 单条 `:focus` 规则里**不要写 `outline:none`** | `#slotName:focus`（1 个 id）特异性高于 `:where(...):focus-visible`（0 特异性），写了就等于把该控件从统一焦点圈里踢出去，只有 Tab 到它时才知道。同款：`user-select:none` 只圈纯展示元素，输入框列进去会连用户敲的字都选不中 |
+| 滑条自定义外观（`-webkit-slider-*` + `-moz-range-*`） | 原生 range 在深色底上轨道几乎不可见。⚠️ 命中区仍是整个 input 盒子（20px / 触屏 34px），点按取值仍由浏览器负责，不要额外加 `padding` 去"做大" |
+| 浮在画布上的控件（`.dd-btn` / `.seg` / `#panelToggle` / `#panelHandle`）带 `--sh-float` | 3D 高光正好落在按钮后面时，没有投影的半透明按钮会"化掉" |
+| `@media (prefers-reduced-motion: reduce)` | 除了抽屉/淡出，还要关掉按压位移与提示条入场动画 |
 
 ## 3. 关键代码定位
 
@@ -132,12 +154,42 @@
 - `refreshShapeUI()` / `refreshWristUI()`：分组**显隐**。导入路径必须调用，新增「按参数隐藏某行」的逻辑要挂进这里
 - `colorRow()`、`checkRow()` **必须 `return row`**，否则依赖返回值的行（如边缘颜色）无法控制显隐
 - `slider(parent, label, min, max, step, get, set, note)`：`note` 为可选悬停说明
-- `.row label` 固定 `flex:0 0 64px`，标签不超过 5 个汉字，否则挤压滑条
+- `bindLabel(lb, ctl)`：给控件发唯一 id 并回填 `label.htmlFor`。**所有行式控件都要走它**
+  （`slider` / `colorRow` / `selectRow` / `checkRow` / 配置名称行；弹窗里的控件直接在 HTML 写 `for=`）。
+  绑定后标签才是命中区 —— 未绑定时每行左侧 64px × 整行高的区域点下去毫无反应，触屏下是纯浪费；
+  读屏器也才念得出「标签 → 控件」的对应关系。⚠️ id 必须唯一，故走 `ctlSeq` 自增，不要手写 id
+- `paintRange(inp)`：把滑条当前值写进 CSS 变量 `--fill`，轨道据此画"已填充段"。
+  ⚠️ **凡是程序化改 `input.value` 的入口都必须调它**，共三处：`slider()` 的 `oninput`、
+  `slider()` 推入的 `uiSyncers`、`syncTexUI()`；弹窗那两个滑条不经过 `slider()`，在 `tfUpdate()` 里单刷。
+  漏一处的表现是"填充色比读数慢一拍"——数值、几何、测试全绿，只有肉眼能看出来
+- `.row label` 固定 `flex:0 0 64px`，标签不超过 5 个汉字，否则挤压滑条。
+  已有 5 处超标（`边缘随正面整体着色` / `导出时透明背景` / `外形超出腕托` / `本色不透明度` / `贴图不透明度`），
+  靠 `line-height:1.25` 让它们折行后不撑高行；⚠️ 不要再加长标签，也**不要**为缩短而改文案
+  （`smoke-render` 按「边缘随正面整体着色」定位该行）
 - 经典模式「鼠标垫外形」组顺序：`腕托顶距` → `编辑轮廓`（默认不勾选）→ `外形超出腕托`；`重置锚点` 按钮挂在「编辑轮廓」行右侧，恢复 `DEFAULT_CLASSIC_CTRL`
+- 导出区按产物分三组（`.btn-grid` 两个图片出口并排 / `.btn-cap` 小标题 + `.btn-stack`），
+  按钮语义分三档：`.btn` 主操作、`.btn.ghost` 次级、`.btn.ok` 导入。⚠️ **按钮文案与 id 不得改动** ——
+  `smoke-export` 在全页面按文案找按钮点击（GLB / STL / OBJ / 模型渲染图），改了文案测试直接找不到
+- 工具栏分两组：左组 `参数 / 导出图片 / 导出模型 / 配置 / 语言`，右组 `模式段 / 视角段`。
+  ⚠️ `#langBtn` 属于**左组**（在「配置」右边）—— 它虽然长得像 `.seg` 里的分组按钮，
+  但语义是"全局动作"而不是"当前处在哪个模式"。夹在两组 `.seg` 中间时，
+  眼睛会把「语言 / 视角」当成同一组，而它们毫无关系。
+  ⚠️ `#panelToggle`（窄屏参数按钮）的文案**固定为 `tb.params`**，不随抽屉状态改成「收起」：
+  两套文案字数不同（含 `⚙`/`▸` 宽度也不同），点一下按钮自己连同整条工具栏一起重排 ——
+  "点了个按钮它自己动了一下"就是这种来历。状态改用颜色表达（`body.panel-open` 下换边框/文字色），
+  盒子尺寸与文字**一个像素都不变**；`smoke-mobile` 有"开合前后按钮盒子一模一样"与
+  "文案不变"两条断言专盯它。⚠️ 别用"给两种文案保留同样的 min-width"来糊 —— 那是脆的。
+  ⚠️ `#panelToggle` 的 `tabindex` 由 `syncPanelToggleTab()` 按「宽屏隐藏 / 抽屉已开」算：
+  抽屉打开时工具栏已 `pointer-events:none`，键盘的"点别处收起"（document 上的 pointerdown）
+  走不通，留在 Tab 序位只会让焦点停在点不到的按钮上。该函数由 `setPanelOpen()` 调用，
+  而 `applyI18n()` 会调 `setPanelOpen()`，故语言切换后也会重算。
 - `#toolbar .tb-left .dd-menu` 必须左对齐（`.dd-menu` 默认 `right:0` 是为右组设计的）。
   ⚠️ 旧节点名 `#topbar` 已并入 `#toolbar`，下拉菜单的事件绑定选择器同步为
   `#toolbar .tb-left .dropdown` —— 改结构时**必须**一起改，否则导出/配置菜单全部点不动
   且不报错（实测：全部 6 个导出/导入入口静默失效，冒烟测试才抓到）
+- 下拉开合只有 `closeAllDD()` 一处实现：它同时清 class 与 `aria-expanded`。
+  ⚠️ 别再写第二份"关掉所有 open"的循环（Esc 与点外部都调它）——
+  aria 与 class 不同步时读屏用户听到"已折叠"而菜单还开着，且不报任何错
 - `resize()` 由 **ResizeObserver 观察 `#stage`** 触发，另挂 window.resize 与 orientationchange。
   ⚠️ 不能只监听 window.resize：窄屏抽屉开合**不改变** window 尺寸但 #stage 确实变了；
   移动端地址栏收起、软键盘、横竖屏旋转也只改可视高度。漏掉会让画布 backing store
@@ -234,10 +286,11 @@
   `right:auto`，位移等于抽屉宽时把手恰好落在屏幕 `0..26px`。多减一个把手宽会把它推出屏幕外
   （实测 `left:-25px`，整只手看不见也点不到）。
 
-**冒烟测试**：`test/smoke-mobile.mjs`（54 项）。这组用例的存在理由 —— 上述问题都**不抛异常**，
+**冒烟测试**：`test/smoke-mobile.mjs`（63 项）。这组用例的存在理由 —— 上述问题都**不抛异常**，
 桌面截图看不出来，只能在具体视口下量：工具栏重叠量、画布 `width/height` 属性比 vs CSS 盒子比、
 抽屉开合后的面板盒子位置、参数按钮在工具栏里的**实际排列顺序**、把手在两个状态下的盒位置、
-`touch-action` 与 viewport meta 的实际计算值、双指手势的旋转方向与缩放锚点。
+`touch-action` 与 viewport meta 的实际计算值、双指手势的旋转方向与缩放锚点、
+语言按钮与「配置」的**实际排列顺序**、参数按钮在抽屉开合前后的**盒子尺寸与文案是否完全一致**。
 
 ⚠️ 双指手势的用例一律走 CDP `Input.dispatchTouchEvent` 派发**真实多指**，不在页面里合成
 `TouchEvent`：Chromium 能把坐标喂进 `e.touches`，但 WebKit 里 `new Touch()` 直接抛
