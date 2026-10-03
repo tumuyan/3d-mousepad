@@ -62,6 +62,14 @@
   .row label { flex:0 0 64px; font-size:12px; color:#a6aab8; }
   .row input[type=range] { flex:1 1 auto; min-width:0; accent-color:#ff7eb6; height:20px; }
   .row .val { flex:0 0 58px; width:58px; font-size:11px; color:#c9cdda; text-align:right; font-variant-numeric:tabular-nums; }
+  /* 方案槽位：一行一个已保存的设计，名字 + 载入 / 删除 */
+  .slot-row { display:flex; align-items:center; gap:6px; padding:5px 0; border-top:1px solid #333743; }
+  .slot-name { flex:1; font-size:12px; color:#e8eaf0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .slot-row button { flex:0 0 auto; padding:3px 9px; border:0; border-radius:5px;
+    background:#3a4150; color:#e6e9ef; cursor:pointer; font-size:12px; }
+  #slotName { flex:1; min-width:0; background:#1b1d23; border:1px solid #333743;
+    border-radius:5px; color:#e6e9ef; padding:5px 8px; font-size:12px; }
+  .slot-row button, .slot-row .slot-name { min-height:28px; }
   .row input[type=color] { width:42px; height:24px; border:none; border-radius:5px; background:none; cursor:pointer; padding:0; }
   .row select {
     flex:1; background:#1a1c22; color:#d7d9e0; border:1px solid #3a3d47; border-radius:6px;
@@ -446,49 +454,63 @@
 <body>
 <div id="app">
   <aside id="panel">
-    <h1>3D MousePad <span>Studio</span></h1>
+    <h1 data-i18n="app.title">3D MousePad <span>Studio</span></h1>
 
     <details open>
-      <summary>贴图</summary>
+      <summary data-i18n="panel.texture">贴图</summary>
       <div class="sec-body">
         <div class="dz-wrap">
-          <button class="paste-btn" id="paste1" type="button" title="粘贴剪贴板图片">📋</button>
-          <div class="dropzone" id="dz1">点击上传主贴图<br><small>或拖拽图片到画布</small></div>
+          <button class="paste-btn" id="paste1" type="button" data-i18n-title="tex.pasteTitle" title="粘贴剪贴板图片">📋</button>
+          <div class="dropzone" id="dz1" data-i18n-html="tex.drop1">点击上传主贴图<br><small>或拖拽图片到画布</small></div>
         </div>
         <input type="file" id="file1" accept="image/*" hidden>
         <div class="dz-wrap">
-          <button class="paste-btn" id="paste2" type="button" title="粘贴剪贴板图片">📋</button>
-          <div class="dropzone" id="dz2">点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small></div>
+          <button class="paste-btn" id="paste2" type="button" data-i18n-title="tex.pasteTitle" title="粘贴剪贴板图片">📋</button>
+          <div class="dropzone" id="dz2" data-i18n-html="tex.drop2">点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small></div>
         </div>
         <input type="file" id="file2" accept="image/*" hidden>
-        <div class="hint">提示：直接把图片文件拖到右侧画布也可上传（自动填入空位）。点击左侧「粘贴」按钮，可将剪贴板中的图片填入对应槽位（不经过预览区）。</div>
+        <div class="hint" data-i18n="tex.hint">提示：直接把图片文件拖到右侧画布也可上传（自动填入空位）。点击左侧「粘贴」按钮，可将剪贴板中的图片填入对应槽位（不经过预览区）。</div>
         <div id="tex1Ctrls"></div>
         <div id="tex2Ctrls"></div>
       </div>
     </details>
 
     <details open>
-      <summary>鼠标垫外形</summary>
+      <summary data-i18n="panel.shape">鼠标垫外形</summary>
       <div class="sec-body" id="shapeCtrls"></div>
     </details>
 
     <details open>
-      <summary>腕托</summary>
+      <summary data-i18n="panel.wrist">腕托</summary>
       <div class="sec-body" id="wristCtrls"></div>
     </details>
 
     <details>
-      <summary>光照</summary>
+      <summary data-i18n="panel.light">光照</summary>
       <div class="sec-body" id="lightCtrls"></div>
     </details>
 
     <details open>
-      <summary>背景与导出</summary>
+      <summary data-i18n="panel.export">背景与导出</summary>
       <div class="sec-body" id="exportCtrls"></div>
     </details>
 
+    <!-- 本地保存：自动草稿 + 多方案槽位。此前纯前端没有任何持久化，
+         调了半小时参数误关标签页就全没了 —— 这是最大的体验缺口。 -->
+    <details open>
+      <summary data-i18n="save.slot">方案槽位</summary>
+      <div class="sec-body" id="slotCtrls">
+        <div class="hint" data-i18n="save.autosaveHint">参数改动会自动存为草稿，刷新页面后恢复。</div>
+        <div class="row">
+          <input type="text" id="slotName" data-i18n-placeholder="save.namePh" placeholder="方案名称">
+          <button id="slotSave" type="button" data-i18n="save.btn">保存</button>
+        </div>
+        <div id="slotList"></div>
+      </div>
+    </details>
+
     <details>
-      <summary>调试</summary>
+      <summary data-i18n="panel.debug">调试</summary>
       <div class="sec-body" id="debugCtrls"></div>
     </details>
 
@@ -504,7 +526,7 @@
        跟着抽屉走到右缘当「收手」——不用回头去工具栏找出口。
        ⚠️ 必须是 #panel 的**兄弟**而不是子元素：#panel 有 overflow-y:auto，
        会把探出右缘的把手直接裁掉（实测 DOM 在 #panel 内时整只手都画不出来）。 -->
-  <button id="panelHandle" type="button" aria-label="展开参数面板" aria-expanded="false"
+  <button id="panelHandle" type="button" data-i18n-aria="aria.expandPanel" aria-label="展开参数面板" aria-expanded="false"
           title="展开 / 收起参数面板"><span class="ph-open">▶</span><span class="ph-close">◀</span></button>
 
   <div id="panelScrim"></div>
@@ -515,29 +537,29 @@
       <div class="tb-left">
         <!-- 窄屏：面板收进抽屉，这个按钮开合抽屉；宽屏下由 CSS 隐藏。
              放在「配置」左边，与其它工具按钮同排，不再是浮在画布上的固定层。 -->
-        <button id="panelToggle" type="button" aria-label="打开参数面板" aria-expanded="false"
-                title="参数面板"><span class="pt-open">⚙ 参数</span><span class="pt-close">▸ 收起</span></button>
+        <button id="panelToggle" type="button" data-i18n-aria="aria.openPanel" aria-label="打开参数面板" aria-expanded="false"
+                title="参数面板"><span class="pt-open" data-i18n="tb.params">⚙ 参数</span><span class="pt-close" data-i18n="tb.collapse">▸ 收起</span></button>
         <div class="dropdown" id="ddExportImg">
-          <button class="dd-btn">导出图片 ▾</button>
+          <button class="dd-btn" data-i18n="tb.exportImg">导出图片 ▾</button>
           <div class="dd-menu">
-            <button data-act="preview">预览图 (PNG)</button>
-            <button data-act="model">渲染图 (PNG)</button>
+            <button data-act="preview" data-i18n="tb.previewPng">预览图 (PNG)</button>
+            <button data-act="model" data-i18n="tb.modelPng">渲染图 (PNG)</button>
           </div>
         </div>
         <div class="dropdown" id="ddExportModel">
-          <button class="dd-btn">导出模型 ▾</button>
+          <button class="dd-btn" data-i18n="tb.exportModel">导出模型 ▾</button>
           <div class="dd-menu">
-            <button data-act="glb">3D 模型 (GLB，含贴图)</button>
-            <button data-act="stl">3D 模型 (STL，打印)</button>
-            <button data-act="obj">3D 模型 (OBJ)</button>
+            <button data-act="glb" data-i18n="tb.glb">3D 模型 (GLB，含贴图)</button>
+            <button data-act="stl" data-i18n="tb.stl">3D 模型 (STL，打印)</button>
+            <button data-act="obj" data-i18n="tb.obj">3D 模型 (OBJ)</button>
           </div>
         </div>
         <div class="dropdown" id="ddConfig">
-          <button class="dd-btn">配置 ▾</button>
+          <button class="dd-btn" data-i18n="tb.config">配置 ▾</button>
           <div class="dd-menu">
-            <button data-act="exportJson">导出配置 (JSON)</button>
-            <button data-act="exportZip">导出配置 (ZIP)</button>
-            <button data-act="import">导入配置…</button>
+            <button data-act="exportJson" data-i18n="tb.cfgJson">导出配置 (JSON)</button>
+            <button data-act="exportZip" data-i18n="tb.cfgZip">导出配置 (ZIP)</button>
+            <button data-act="import" data-i18n="tb.cfgImport">导入配置…</button>
           </div>
         </div>
         <input type="file" id="cfgFile" accept=".json,.zip,application/json,application/zip" hidden>
@@ -545,19 +567,22 @@
       <div class="tb-spacer"></div>
       <div class="tb-right">
         <div class="seg" id="modeSeg" title="鼠标交互模式">
-          <button data-mode="view" class="active">视角</button>
-          <button data-mode="t1">主贴图</button>
-          <button data-mode="t2">腕托贴图</button>
+          <button data-mode="view" class="active" data-i18n="mode.view">视角</button>
+          <button data-mode="t1" data-i18n="mode.t1">主贴图</button>
+          <button data-mode="t2" data-i18n="mode.t2">腕托贴图</button>
         </div>
-        <div class="seg" id="viewSeg">
-          <button data-view="persp">透视</button>
-          <button data-view="top">顶视</button>
-          <button data-view="front">前视</button>
+          <!-- 语言切换：只改文案，不动任何参数与几何 -->
+        <button id="langBtn" class="dd-btn" type="button" data-i18n="lang.switch"
+                title="Switch interface language / 切换界面语言">English</button>
+      <div class="seg" id="viewSeg">
+          <button data-view="persp" data-i18n="view.persp">透视</button>
+          <button data-view="top" data-i18n="view.top">顶视</button>
+          <button data-view="front" data-i18n="view.front">前视</button>
         </div>
       </div>
     </div>
     <div id="modeHint"></div>
-    <div id="dropHint">松开以上传图片</div>
+    <div id="dropHint" data-i18n="hint.drop">松开以上传图片</div>
   </main>
 </div>
 
@@ -566,221 +591,50 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
+/* 本工程的模块拆分（原生 ES module，零构建）：
+     src/util.js        零依赖工具
+     src/params.js      参数定义 + 白名单校验          ← 纯逻辑
+     src/config.js      ZIP / 序列化 / 版本迁移        ← 纯逻辑
+     src/textureMath.js 裁剪压缩 + 锚点缩放反解        ← 纯逻辑
+     src/anchors.js     贝塞尔锚点烘焙 / 平滑 / 校验   ← 纯数学
+     src/footprint.js   腕托足迹采样与外扩             ← 纯几何
+     src/store.js       localStorage + IndexedDB 持久化
+     src/i18n.js        界面文案词典与语言切换
+   把纯函数拆出来的直接收益：它们能在 node:test 里直接 import，
+   不必每次开浏览器 + 等 3.5s CDN（见 test/unit/*.test.mjs）。 */
+import { norm2, numOrNull, clampNum, getPath, setPath } from './src/util.js';
+import {
+  DEFAULT_CLASSIC_CTRL, MM_PER_UNIT, P, P_DEFAULTS, PARAM_SCHEMA,
+  sanitizeParams, missingSchemaKeys, CONFIG_VERSION,
+} from './src/params.js';
+import {
+  crc32, b64FromBytes, makeZip, parseZip, safeFileName, downloadBlob,
+  serializeConfig, texturePayload, migrateConfig, MAX_CONFIG_BYTES,
+} from './src/config.js';
+import {
+  tfCropSize as _tfCropSize, tfScale, tfEdgeRange, tfEdgeValue,
+  tfFinalSize as _tfFinalSize, tfClampCrop as _tfClampCrop,
+  tfFullCrop, tfApplyAspect, zoomTexAbout as _zoomTexAbout,
+} from './src/textureMath.js';
+import { bakeClassicCtrl, autoSmoothClassicCtrl, ensureClassicCtrl } from './src/anchors.js';
+import { buildFootprint, removeOffsetLoops } from './src/footprint.js';
+import * as store from './src/store.js';
+import { t as _t, setLang, getLang, otherLang, initLang, onLangChange, langSwitchLabel } from './src/i18n.js';
+
+// 文案入口。写 `T('key')` 而非直接 import t()，是为了让下面这段"界面文案"与
+// "调试日志"的界限清楚：T 只出现在用户可见处，console 里的中文不走它。
+const T = _t;
+
 /* ================= 工具函数 ================= */
-const norm2 = (x, y) => { const l = Math.hypot(x, y) || 1; return { x: x / l, y: y / l }; };
+// ⚠️ 必须在建任何 UI 之前定语言：控件创建时就会取一次 T(key)，
+//    晚于此处会先按默认语言建一遍、再刷一遍，白跑一趟还可能闪一下界面。
+initLang(window.localStorage);
 
 /* ================= 参数 ================= */
 // 默认经典轮廓锚点（按 3d MousePad Template），用于首次加载与“重置锚点”。
 // 运行时坐标采用顶层 {x,y,h1,h2}（与 bakeClassicCtrl / makeClassicShape 约定一致）。
 // 共 7 个锚点：首尾为 pin（接缝，手柄由 ensureClassicCtrl 重算），中间 5 个可拖拽。
-const DEFAULT_CLASSIC_CTRL = [
-  { x: -77.87016515677138, y: -116.87196203842663, h1: { x: -77.87016515677138, y: -116.87196203842663 }, h2: { x: -81.75976991430169, y: -101.1194309458591 } },
-  { x: -72.39671119796571, y: -66.03870827899848, h1: { x: -73.41438595928038, y: -78.25380858100641 }, h2: { x: -70.87398786041214, y: -47.76153465979944 } },
-  { x: -103.02017794430475, y: -3.591958181479075, h1: { x: -91.22373904493193, y: -27.961251618686443 }, h2: { x: -112.8317730574489, y: 16.67700963490084 } },
-  { x: -93.14914645679774, y: 50.287355985997074, h1: { x: -98.81515685043313, y: 43.43436161334235 }, h2: { x: -63.7719811054472, y: 85.8188031332696 } },
-  { x: 0.5478745968429263, y: 96.93694595772325, h1: { x: -34.775768031004915, y: 96.15593587902342 }, h2: { x: 29.71789177917693, y: 97.58189862172993 } },
-  { x: 91.81815115714443, y: 46.6804878923647, h1: { x: 70.12431390266855, y: 79.49146313593883 }, h2: { x: 110.86396431535806, y: 17.874532694237914 } },
-  { x: 99.68920152549207, y: -32.5305450234862, h1: { x: 99.68920152549207, y: -32.5305450234862 }, h2: { x: 93.8222688203322, y: -56.27944749493295 } },
-  { x: 82.84846493178915, y: -85.45820524939745, h1: { x: 87.09875240404779, y: -61.367411896576435 }, h2: { x: 81.13539464219684, y: -95.16795373459694 } },
-  { x: 77.87016515677138, y: -116.87196203842663, h1: { x: 81.1672277264742, y: -105.1974693635984 }, h2: { x: 77.87016515677138, y: -116.87196203842663 } },
-];
-/* ================= 单位约定 =================
-   所有长度类参数一律为**毫米**，且 1 个世界单位 = 1mm（不引入任何全局缩放）。
-   这条约定是 3D 导出、SVG/印刷落地的前提：STL/OBJ 直接按 mm 写出，
-   GLB 按 glTF 米制规范在根节点套 0.001。
-   ⚠️ 凡是新增长度参数，一律以 mm 为单位，不要引入 cm/m 或归一化比例。
-   ⚠️ 已知两处"参数值 ≠ 成品尺寸"，见 Agents.md「单位约定」一节：
-      · 倒角外扩：外廓 = 参数 + 1.8 × bevel（bevelSize = bevel × 0.9 向四周外扩）
-      · 总厚度：成品总厚 = thick + 2 × bevel（倒角在上下两侧各加一层）       */
-const MM_PER_UNIT = 1;   // 世界单位 → 毫米；保持 1 即"世界单位 = mm"
-const P = {
-  // 外形
-  shape: 'classic',   // rect | ellipse | stadium | classic
-  cfgName: '',        // 配置名称，用于导出文件名（留空则用默认名）
-  // padW/padH 为**轮廓**尺寸（mm）；注意倒角还会让成品外廓再大 1.8×bevel
-  padW: 230, padH: 265, corner: 48, thick: 1, bevel: 3,
-  edgeColor: '#f4f1ec',
-  edgeSame: true,   // true=边缘与上表面作为整体着色（共享本色+贴图）
-  // 腕托（以下长度量均为 mm）
-  wristStyle: 'balls', // none | full | balls
-  wH: 27,             // 隆起高度
-  wW: 150,            // 宽度（整体式）
-  wD: 89,             // 前后长度
-  wPos: 20,           // 距底边距离
-  wGap: 71,           // 双球间距
-  wBW: 82,            // 单球宽度
-  wMorph: 0.55,       // 整体腕托: 0=椭球 1=肾型
-  wMorphRot: 0,       // 整体腕托旋转角度（度），肾型形状不变，仅绕竖直轴旋转
-  wRot: 10,           // 双球旋转角（两球反向，度）
-  wEgg: 0.1,          // 双球鹅蛋度 -0.45..0.45
-  wJoin: 16,          // 双球过渡弧宽度（0=保留原始相交尖角）
-  wMargin: 2,         // 经典款：外形超出腕托的距离（overhang）
-  wristTopGap: 215,   // 经典款：腕托顶 → 轮廓顶的距离（决定垫身总长）
-  // 经典款上半轮廓：一串三次贝塞尔锚点（含切线手柄），由腕托足迹自动烘焙后可手动拖拽。
-  // null 表示尚未烘焙，首次生成时按 wristTopGap 自动生成。
-  // 结构：[{ x, y, h1:{x,y}, h2:{x,y}, pin?:true }]，pin 点为足迹接缝，位置由腕托决定
-  classicCtrl: structuredClone(DEFAULT_CLASSIC_CTRL),
-  // 材质
-  rough: 0.55,
-  matColor: '#b6e3a8',   // 材质底色（贴图叠加在其上方）
-  matOpacity: 1,         // 本色不透明度（整体）
-  texOpacity: 1,         // 贴图不透明度（仅影响贴图叠加强度）
-  // 贴图变换
-  t1: { s: 1, ox: 0, oy: 0, r: 0, wrap: 'cutout', asp: 1 },
-  t2: { s: 1, ox: 0, oy: 0, r: 0, wrap: 'cutout', asp: 1 },
-  // 光照
-  hemi: 0.55, key: 1.8, az: 35, el: 55, lightColor: '#ffffff', env: 0.6,
-  shadow: false,
-  // 背景/导出
-  bg: '#e9e7ec', transparent: false, exportTransparent: false, exportScale: 2,
-};
 
-/* ================= 配置导入校验（缺陷 6） =================
-   原实现是 `Object.assign(P, cfg.params)`：既会把任意未知键写进 P（可注入状态），
-   也会让 NaN / Infinity / 越界值直接进入几何，而这类错误不会抛异常，只会画出畸形模型
-   或直接让 ExtrudeGeometry 崩掉。故改为白名单 + 类型/范围校验：
-     · 白名单外的键 —— 丢弃（并记录 warning）
-     · 类型不符 / 越界 —— 回退该字段的默认值（并记录 warning）
-     · classicCtrl —— 单独做结构校验，不合法则整体回退 DEFAULT_CLASSIC_CTRL
-   ⚠️ 新增参数必须同时登记到 PARAM_SCHEMA，否则导入时会被静默丢弃（下方有 dev 自检）。   */
-const P_DEFAULTS = structuredClone(P);
-const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
-const TEX2D_SCHEMA = {
-  s:    { t: 'num', min: 0.05, max: 20 },
-  ox:   { t: 'num', min: -1, max: 1 },
-  oy:   { t: 'num', min: -1, max: 1 },
-  r:    { t: 'num', min: -360, max: 360 },
-  wrap: { t: 'enum', vals: ['clamp', 'cutout', 'repeat', 'mirror'] },
-  asp:  { t: 'num', min: 0.1, max: 10 },
-};
-// 数值范围比滑条区间略宽：滑条限制的是"合理设计空间"，这里只需挡住会让几何崩坏的值，
-// 以免旧配置或手改配置被无谓地截断。
-const PARAM_SCHEMA = {
-  shape:       { t: 'enum', vals: ['classic', 'rect', 'ellipse', 'stadium'] },
-  cfgName:     { t: 'str', max: 120 },
-  padW:        { t: 'num', min: 80, max: 600 },
-  padH:        { t: 'num', min: 80, max: 600 },
-  corner:      { t: 'num', min: 0, max: 150 },
-  thick:       { t: 'num', min: 0, max: 30 },
-  bevel:       { t: 'num', min: 0, max: 20 },
-  edgeColor:   { t: 'color' },
-  edgeSame:    { t: 'bool' },
-  wristStyle:  { t: 'enum', vals: ['none', 'full', 'balls'] },
-  wH:          { t: 'num', min: 0, max: 120 },
-  wW:          { t: 'num', min: 10, max: 500 },
-  wD:          { t: 'num', min: 5, max: 400 },
-  wPos:        { t: 'num', min: 0, max: 300 },
-  wGap:        { t: 'num', min: 0, max: 400 },
-  wBW:         { t: 'num', min: 10, max: 300 },
-  wMorph:      { t: 'num', min: 0, max: 3 },
-  wMorphRot:   { t: 'num', min: -360, max: 360 },
-  wRot:        { t: 'num', min: -90, max: 90 },
-  wEgg:        { t: 'num', min: -1, max: 1 },
-  wJoin:       { t: 'num', min: 0, max: 100 },
-  wMargin:     { t: 'num', min: 0, max: 40 },
-  wristTopGap: { t: 'num', min: 20, max: 500 },
-  rough:       { t: 'num', min: 0, max: 1 },
-  matColor:    { t: 'color' },
-  matOpacity:  { t: 'num', min: 0, max: 1 },
-  texOpacity:  { t: 'num', min: 0, max: 1 },
-  t1:          { t: 'tex2d' },
-  t2:          { t: 'tex2d' },
-  classicCtrl: { t: 'ctrl' },
-  hemi:        { t: 'num', min: 0, max: 5 },
-  key:         { t: 'num', min: 0, max: 10 },
-  az:          { t: 'num', min: -360, max: 360 },
-  el:          { t: 'num', min: 0, max: 90 },
-  lightColor:  { t: 'color' },
-  env:         { t: 'num', min: 0, max: 5 },
-  shadow:      { t: 'bool' },
-  bg:          { t: 'color' },
-  transparent: { t: 'bool' },
-  exportTransparent: { t: 'bool' },
-  exportScale: { t: 'num', min: 1, max: 3, int: true },
-};
-// dev 自检：新增参数忘记登记 schema 时，导入会把它静默丢弃 —— 启动时在控制台提醒
-{
-  const missing = Object.keys(P_DEFAULTS).filter(k => !(k in PARAM_SCHEMA));
-  if (missing.length) console.warn('[配置校验] 以下参数未登记 PARAM_SCHEMA，导入时会被丢弃：', missing);
-}
-
-function numOrNull(v) {
-  if (v === null || v === undefined || v === '') return null;
-  const n = typeof v === 'number' ? v : parseFloat(v);
-  return Number.isFinite(n) ? n : null;
-}
-function sanitizeNum(v, s) {
-  const n = numOrNull(v);
-  if (n === null) return undefined;
-  return THREE.MathUtils.clamp(s.int ? Math.round(n) : n, s.min, s.max);
-}
-function sanitizeTex2d(raw) {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const out = {};
-  for (const [k, s] of Object.entries(TEX2D_SCHEMA)) {
-    const d = P_DEFAULTS.t1[k];
-    const v = (k in raw) ? sanitizeField(raw[k], s) : undefined;
-    out[k] = v === undefined ? d : v;
-  }
-  return out;
-}
-// classicCtrl 单独校验：它决定上半轮廓，坏数据会直接让 makeClassicShape 崩掉。
-// 返回 undefined = 非法（调用方回退默认）；返回 null = 合法且表示"尚未烘焙"。
-function sanitizeClassicCtrl(raw) {
-  if (raw === null || raw === undefined) return null;   // 未烘焙：由 makeClassicShape 自动生成
-  if (!Array.isArray(raw) || raw.length < 4) return undefined;   // 少于 4 点无法构成闭合轮廓
-  const pts = [];
-  for (const pt of raw) {
-    if (!pt || typeof pt !== 'object') return undefined;
-    // 兼容旧版 { p:{x,y}, h1, h2 } 嵌套结构（运行时约定为顶层 {x,y,h1,h2}）
-    const x = numOrNull(pt.x !== undefined ? pt.x : (pt.p && pt.p.x));
-    const y = numOrNull(pt.y !== undefined ? pt.y : (pt.p && pt.p.y));
-    if (x === null || y === null) return undefined;
-    // 坐标夹到 ±5000mm：越界值不会崩，但会让 fitEditOrtho 把视口拉到荒谬的尺度
-    const cx = THREE.MathUtils.clamp(x, -5000, 5000);
-    const cy = THREE.MathUtils.clamp(y, -5000, 5000);
-    const hd = h => {
-      const hx = numOrNull(h && h.x), hy = numOrNull(h && h.y);
-      return (hx === null || hy === null) ? { x: cx, y: cy } : { x: hx, y: hy };
-    };
-    const o = { x: cx, y: cy, h1: hd(pt.h1), h2: hd(pt.h2) };
-    if (pt.pin) o.pin = true;
-    pts.push(o);
-  }
-  return pts;
-}
-function sanitizeField(raw, s) {
-  switch (s.t) {
-    case 'num':   return sanitizeNum(raw, s);
-    case 'enum':  return s.vals.includes(raw) ? raw : undefined;
-    case 'bool':  return typeof raw === 'boolean' ? raw : undefined;
-    case 'color': return (typeof raw === 'string' && COLOR_RE.test(raw)) ? raw : undefined;
-    case 'str':   return typeof raw === 'string' ? raw.slice(0, s.max) : undefined;
-    case 'tex2d': return sanitizeTex2d(raw);
-    case 'ctrl':  return sanitizeClassicCtrl(raw);
-    default:      return undefined;
-  }
-}
-// 返回 { params, warnings }。params 只含白名单内的键，每个非法字段都以默认值顶替并记 warning。
-// ⚠️ 语义是「配置 = 完整快照」而非「合并」：配置里没写的键会被重置为默认值，
-// 与旧的 Object.assign 不同。本工具导出的配置含全部字段，故只影响手写 / 外部生成的配置。
-function sanitizeParams(raw) {
-  const src = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
-  const params = {}, warnings = [];
-  for (const [key, s] of Object.entries(PARAM_SCHEMA)) {
-    const has = key in src && src[key] !== undefined;
-    const v = has ? sanitizeField(src[key], s) : undefined;
-    if (v === undefined) {
-      if (has) warnings.push(key);
-      params[key] = structuredClone(P_DEFAULTS[key]);
-    } else {
-      params[key] = v;
-    }
-  }
-  const unknown = Object.keys(src).filter(k => !(k in PARAM_SCHEMA));
-  if (unknown.length) warnings.push(`未知字段 ${unknown.slice(0, 5).join('、')}${unknown.length > 5 ? ' 等' : ''}`);
-  return { params, warnings };
-}
 
 /* ================= 渲染基础 ================= */
 const canvas = document.getElementById('view');
@@ -811,6 +665,8 @@ renderer.localClippingEnabled = true;
 // 漏置脏时表现为「最多延迟半秒」而非「永久卡死」。
 let renderDirty = true;
 let idleFrames = 0;
+// 本次启动是否从本地草稿恢复（用于给一句提示，不影响任何逻辑）
+let restoredDraft = false;
 const IDLE_RENDER_MAX = 30;
 function markRenderDirty() { renderDirty = true; }
 // 阴影贴图只与几何、光源有关，与相机 / 画布尺寸无关，故单独置脏
@@ -902,7 +758,7 @@ function makeTex(url, cb, onFail) {
   const fail = err => {
     console.error('[贴图加载失败]', err);
     if (onFail) onFail(err);
-    else toast('贴图加载失败：' + ((err && err.message) || '文件可能已损坏或不是受支持的图片格式'), 'err');
+    else toast(T('tex.loadFailed', { msg: (err && err.message) || T('tex.fileHint') }), 'err');
   };
   const load = u => texLoader.load(
     u,
@@ -1006,6 +862,25 @@ function tfFitCanvas() {
   tf.ctx.drawImage(tf.img, tf.view.x * dpr, tf.view.y * dpr, w * dpr, h * dpr);
 }
 
+/* ---------- 尺寸计算的**适配层** ----------
+   裁剪 → 压缩 → 软上限这套计算的本体在 src/textureMath.js（纯函数，不认 tf 状态）。
+   这里只做一件事：把弹窗的当前状态（tf.img / tf.crop / tf.edge / tf.aspect）喂进去。
+   这样滑条量程、只缩不放、比例夹取这些边界都能在 node:test 里直接断言，
+   不必先起浏览器、再传一张超尺寸图把弹窗叫出来。 */
+const tfImg = () => ({ w: tf.img.width, h: tf.img.height });
+function tfSyncEdge() {
+  const r = tfEdgeRange(tf.img.width, tf.img.height);
+  const el = document.getElementById('tfSize');
+  el.min = String(r.min);
+  el.max = String(r.max);
+  el.value = String(tfEdgeValue(tf.img.width, tf.img.height, tf.edge));
+}
+function tfCropSize() { return _tfCropSize(tf.crop); }
+function tfFinalSize() {
+  return _tfFinalSize(tf.crop, tf.img.width, tf.img.height, tf.edge, MAX_TEX_EDGE);
+}
+function tfClampCrop(c) { return _tfClampCrop(c, tf.img.width, tf.img.height, tf.aspect); }
+
 // 把 crop（像素）映射到显示层：canvas 百分比 + 遮罩由 .tf-crop 的 box-shadow 承担
 function tfRender() {
   const { x, y, w, h } = tf.view;
@@ -1021,56 +896,6 @@ function tfRender() {
   tf.cropEl.style.height = (ch / st.height * 100) + '%';
 }
 
-// 把滑条的量程与刻度写回 DOM。tfOpen / tfOrig / 窗口尺寸变化都要重算。
-function tfSyncEdge() {
-  const r = tfEdgeRange();
-  const el = document.getElementById('tfSize');
-  el.min = String(r.min);
-  el.max = String(r.max);
-  el.value = String(tfEdgeValue());
-}
-
-// 裁剪尺寸 = 裁剪区**原尺寸**（1:1 像素），不缩也不放。
-// ⚠️ 这里刻意不乘滑条比例：默认 1:1 是无损的，用户想要多小就自己裁多小 ——
-// 「裁剪多大就出多大」，所见即所得。旧实现在打开弹窗那一刻就把图无条件缩到上限边长，
-// 于是裁剪框空着不用也会掉分辨率，用户根本不知道发生了什么。
-function tfCropSize() {
-  const p = tf.crop;
-  // 至少 1px；canvas 不接受 0
-  return { w: Math.max(1, Math.round(p.w)), h: Math.max(1, Math.round(p.h)) };
-}
-
-// 只朝一个方向走：把一组尺寸的**长边**等比缩到 edge，已小于 edge 则原样返回。
-// 单向是刻意的 —— 往回拉把图放大等于凭空插值；「不想要压缩」的出口是「1 : 1」按钮。
-function tfScale(s, edge) {
-  const long = Math.max(s.w, s.h);
-  if (!(edge < long)) return s;
-  const k = edge / long;
-  return { w: Math.max(1, Math.round(s.w * k)), h: Math.max(1, Math.round(s.h * k)) };
-}
-
-// 滑条刻度。范围 `[1, 原图长边]`：
-//   · 上界**必须**取长边 —— 拉到最右才是"不压缩"；若取短边（旧实现），最多只能压到短边，
-//     而短边可能仍超软上限（3360），于是"1:1"变成一整块够不着的死区。
-//   · 下界取 1，**不能**取 min(长边, 上限)：刻度够不到 4096 以下就压不出合规的图
-//     （实测 `min=4096` 时浏览器把 1024 直接夹回 4096，滑条成了摆设）。
-//   · 绝不读裁剪框：它是独立状态，读了就等于"改裁剪框顺手把滑条也改了"
-function tfEdgeRange() {
-  return { min: 1, max: Math.max(1, Math.round(Math.max(tf.img.width, tf.img.height))) };
-}
-function tfEdgeValue() {
-  const r = tfEdgeRange();
-  // 0 = 未压缩（回显即上界）；其余刻度用 clamp 而非 Math.max(1,·) —— min 属性若不生效，
-  // 拖到量程外的值会原样写进 tfScale，那就不是"压到 1024"而是"压到 1"，图上直接出事
-  return tf.edge ? Math.min(r.max, Math.max(r.min, tf.edge)) : r.max;
-}
-
-// 最终输出 = 裁剪尺寸按长边裁剪滑条等比压小（只缩不放）。
-// 软上限（MAX_TEX_EDGE）也在这里兑现：超了就在应用前压到上限内，保证交给 WebGL 的贴图合规。
-function tfFinalSize() {
-  const o = tfScale(tfCropSize(), tfEdgeValue());
-  return tfScale(o, Math.min(MAX_TEX_EDGE, Math.max(o.w, o.h)));
-}
 
 function tfUpdate() {
   tfRender();
@@ -1083,51 +908,29 @@ function tfUpdate() {
   // 估算体积：PNG 约按 4B/px 上限打八折，JPEG 按质量粗略折算（只用于给用户一个量级感）
   const px = o.w * o.h;
   const est = mime === 'image/jpeg' ? px * (0.06 + q * 0.34) : px * 0.7;
-  const estTxt = `约 <b>${est > 1048576 ? (est / 1048576).toFixed(1) + ' MB' : Math.round(est / 1024) + ' KB'}</b>`;
+  const estTxt = est > 1048576
+    ? T('tf.estMb', { v: (est / 1048576).toFixed(1) })
+    : T('tf.estKb', { v: String(Math.round(est / 1024)) });
   const iw = tf.img.width, ih = tf.img.height;
   // 三段读数各自独立：进去什么 → 裁出多少 → 再压到多少。
   // 「裁剪」取裁剪框原像素，「压缩」＝真正交给 WebGL 的尺寸（超过软上限才会缩小）。
   // 每一段都只在**确实变小**时才出现，所以没裁就不会有「裁剪」、没压就不会有「压缩」。
   const cut = c.w !== iw || c.h !== ih;
   const squeezed = o.w !== c.w || o.h !== c.h;
-  let line = `原图 <b>${iw} × ${ih}</b> px`;
-  if (cut) line += ` → 裁剪 <b>${c.w} × ${c.h}</b> px`;
-  if (squeezed) line += ` → 压缩 <b>${o.w} × ${o.h}</b> px，${estTxt}`;
-  else line += `，${estTxt}`;
+  let line = T('tf.readout', { iw, ih });
+  if (cut) line += T('tf.cut', { w: c.w, h: c.h });
+  if (squeezed) line += T('tf.squeeze', { w: o.w, h: o.h, est: estTxt });
+  else line += T('tf.est', { est: estTxt });
   // ⚠️ 标红看的是**裁剪尺寸**（这一步的产物是否合规），不是最终尺寸 ——
   //    最终尺寸被软上限兜底过，永远合规，拿它判就再也标不红（实测）。
   const tooBig = c.w > MAX_TEX_EDGE || c.h > MAX_TEX_EDGE;
   // 三步都没变小、却仍要压：说明是软上限兜底，补一句讲清楚
-  if (!cut && !squeezed && tooBig) {
-    line += `；超过 <b>${MAX_TEX_EDGE} × ${MAX_TEX_EDGE}</b> px，应用时会自动压缩到上限以内`;
-  }
-  out.innerHTML = line + '。';
+  if (!cut && !squeezed && tooBig) line += T('tf.autoShrink', { max: MAX_TEX_EDGE });
+  out.innerHTML = line + T('tf.period');
   out.classList.toggle('bad', tooBig);
   tfSyncEdge();
   document.getElementById('tfSizeVal').textContent = document.getElementById('tfSize').value;
   document.getElementById('tfQualityVal').textContent = document.getElementById('tfQuality').value;
-}
-
-// 把 crop 限制在图片范围内并保底 16px，防止拖出边界或拉到零面积。
-// ⚠️ 锁比例时不能对 w / h 各自独立夹取 —— 一旦有一边先撞到图片边界，
-// 两边就被夹成不同比例（实测 1:1 被夹成 0.84）。改为等比缩到装得下为止。
-function tfClampCrop(c) {
-  const min = 16, iw = tf.img.width, ih = tf.img.height;
-  if (tf.aspect) {
-    // 保比缩小：取宽高两个方向允许的最大缩放系数中较小者
-    const k = Math.min(1, iw / c.w, ih / c.h);
-    c.w *= k; c.h *= k;
-    if (Math.max(c.w, c.h) < min) {   // 极端窄图：退回最小尺寸并保比
-      c.w = tf.aspect >= 1 ? min : min * tf.aspect;
-      c.h = c.w / tf.aspect;
-    }
-  } else {
-    c.w = Math.min(Math.max(min, c.w), iw);
-    c.h = Math.min(Math.max(min, c.h), ih);
-  }
-  c.x = Math.min(Math.max(0, c.x), iw - c.w);
-  c.y = Math.min(Math.max(0, c.y), ih - c.h);
-  return c;
 }
 
 function tfClose() {
@@ -1183,25 +986,14 @@ function tfBind() {
     const v = +e.target.value;
     tf.aspect = v;
     if (!v) { tfUpdate(); return; }
-    // 以当前裁剪框中心为基准，套用新比例（保持面积尽量不变）
-    const c = { ...tf.crop };
-    const cx = c.x + c.w / 2, cy = c.y + c.h / 2;
-    const area = c.w * c.h;
-    let w = Math.sqrt(area * v), h = w / v;
-    tf.crop = tfClampCrop({ x: cx - w / 2, y: cy - h / 2, w, h });
+    // 以当前裁剪框中心为基准套用新比例（保持面积尽量不变），本体在 textureMath.js
+    tf.crop = tfApplyAspect(tf.crop, tf.img.width, tf.img.height, v);
     tfUpdate();
   };
   // 全选 = 尽可能大。锁着比例时给的是**内接**矩形（3360×4800 锁 1:1 → 3360×3360），
   // 否则锁比例就成了摆设：点一下全选就跳出个不满足比例的大框。
   document.getElementById('tfFull').onclick = () => {
-    const iw = tf.img.width, ih = tf.img.height;
-    let w = iw, h = ih;
-    if (tf.aspect) {
-      if (tf.aspect >= 1) h = w / tf.aspect; else w = h * tf.aspect;
-      if (w > iw) { w = iw; h = w / tf.aspect; }
-      if (h > ih) { h = ih; w = h * tf.aspect; }
-    }
-    tf.crop = { x: (iw - w) / 2, y: (ih - h) / 2, w, h };
+    tf.crop = tfFullCrop(tf.img.width, tf.img.height, tf.aspect);
     tfUpdate();
   };
   // 1:1：滑条回最右端 = 不压缩，输出就是裁剪区原像素。
@@ -1239,7 +1031,7 @@ function tfBind() {
     c2.drawImage(tf.img, tf.crop.x, tf.crop.y, tf.crop.w, tf.crop.h, 0, 0, o.w, o.h);
     let url;
     try { url = out.toDataURL(mime, q); }
-    catch (err) { toast('图片处理失败：' + err.message, 'err', 4000); return; }
+    catch (err) { toast(T('tf.processFailed', { msg: err.message }), 'err', 4000); return; }
     const r = tf.resolve; tfClose(); if (r) r(url);
   };
 }
@@ -1253,7 +1045,7 @@ window.tfState = () => ({
   crop: { ...tf.crop }, view: { ...tf.view }, aspect: tf.aspect,
   imgW: tf.img ? tf.img.width : 0, imgH: tf.img ? tf.img.height : 0,
   // 刻度是独立状态（不再由裁剪框反推），输出尺寸也一并给出，冒烟脚本不必再从读数里抠数字
-  edge: tfEdgeValue(), final: tfFinalSize(),
+  edge: tfEdgeValue(tf.img.width, tf.img.height, tf.edge), final: tfFinalSize(),
   open: !!(tf.el && tf.el.classList.contains('on')),
 });
 
@@ -1341,91 +1133,6 @@ function wristZBase() {
    其余锚点自由编辑。烘焙只在「尚无锚点」或「腕托接缝已移动」时发生，
    因此用户拖出的形状不会被后续 rebuild 覆盖。                          */
 
-// 由足迹接缝与顶部距离生成初始锚点：左接缝 → 左腰 → 左肩 → 顶 → 右肩 → 右腰 → 右接缝
-function bakeClassicCtrl(pBL, pBR, dBLv, dBRv, topY) {
-  const halfW = P.padW / 2;
-  const yBL = pBL.y, yBR = pBR.y;
-  const spanL = topY - yBL, spanR = topY - yBR;
-  // 切线长度取相邻锚点间距的经验比例，保证初始形状即平滑饱满
-  const mk = (x, y) => ({ x, y, h1: { x, y }, h2: { x, y } });
-  const pts = [
-    { ...mk(pBL.x, yBL), pin: true },
-    mk(-halfW * 0.985, yBL + spanL * 0.34),          // 左腰
-    mk(-halfW * 0.90, yBL + spanL * 0.72),           // 左肩
-    mk(-halfW * 0.06, topY),                          // 顶（略偏左，符合人机工程）
-    mk(halfW * 0.88, yBR + spanR * 0.70),            // 右肩
-    mk(halfW * 0.97, yBR + spanR * 0.32),            // 右腰
-    { ...mk(pBR.x, yBR), pin: true },
-  ];
-  // 端点切线：严格继承足迹端点切线做 G1 衔接（左右对称，数学正确）。
-  // 底轮廓在端点处的切向与上半轮廓起点切向天然反向（闭曲线），故取 -dBLv / -dBRv。
-  autoSmoothClassicCtrl(pts);
-  const n = pts.length - 1;
-  const t0 = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) * 0.42;
-  pts[0].h2 = { x: pts[0].x - dBLv.x * t0, y: pts[0].y - dBLv.y * t0 };
-  const tN = Math.hypot(pts[n - 1].x - pts[n].x, pts[n - 1].y - pts[n].y) * 0.42;
-  pts[n].h1 = { x: pts[n].x - dBRv.x * tN, y: pts[n].y - dBRv.y * tN };
-  return pts;
-}
-
-// 按 Catmull-Rom 切线为每个中间锚点生成一对共线手柄 → 初始曲线自动平滑
-function autoSmoothClassicCtrl(pts) {
-  for (let i = 0; i < pts.length; i++) {
-    const p = pts[i];
-    const a = pts[i - 1] || p, b = pts[i + 1] || p;
-    const tx = (b.x - a.x) * 0.5, ty = (b.y - a.y) * 0.5;
-    const dPrev = Math.hypot(p.x - a.x, p.y - a.y);
-    const dNext = Math.hypot(b.x - p.x, b.y - p.y);
-    const L = Math.hypot(tx, ty) || 1;
-    const k1 = Math.min(dPrev * 0.42, L) / L;
-    const k2 = Math.min(dNext * 0.42, L) / L;
-    p.h1 = { x: p.x - tx * k1, y: p.y - ty * k1 };
-    p.h2 = { x: p.x + tx * k2, y: p.y + ty * k2 };
-  }
-}
-
-// 取得当前锚点；pin 锚点始终跟随腕托足迹，其余保持用户编辑结果
-function ensureClassicCtrl(pBL, pBR, dBLv, dBRv, topY) {
-  let c = P.classicCtrl;
-  const stale = !Array.isArray(c) || c.length < 3
-    || !c[0] || !c[c.length - 1]
-    || c.some(p => !p
-        || !Number.isFinite(p.x) || !Number.isFinite(p.y)
-        || ((p.h1 || p.h2) && (!p.h1 || !p.h2
-            || !Number.isFinite(p.h1.x) || !Number.isFinite(p.h1.y)
-            || !Number.isFinite(p.h2.x) || !Number.isFinite(p.h2.y))));
-  if (stale) {
-    P.classicCtrl = bakeClassicCtrl(pBL, pBR, dBLv, dBRv, topY);
-    return P.classicCtrl;
-  }
-  // 腕托尺寸/位置变化时，仅平移两端 pin 锚点并重算其切线，中间锚点不动
-  const first = c[0], last = c[c.length - 1];
-  const moveEnd = (p, target, dir, neighbor, isFirst) => {
-    if (Math.abs(p.x - target.x) < 1e-6 && Math.abs(p.y - target.y) < 1e-6) return;
-    p.x = target.x; p.y = target.y;
-    const t = Math.hypot(neighbor.x - p.x, neighbor.y - p.y) * 0.42;
-    const h = { x: p.x - dir.x * t, y: p.y - dir.y * t };
-    if (isFirst) p.h2 = h; else p.h1 = h;
-  };
-  moveEnd(first, pBL, dBLv, c[1], true);
-  moveEnd(last, pBR, dBRv, c[c.length - 2], false);
-  first.pin = last.pin = true;
-  // 中间“接缝”类锚点（设计稿可能只存 p、无 h1/h2）补一对平滑共线手柄，
-  // 避免 makeClassicShape() 的贝塞尔链读到 undefined 手柄。
-  for (let i = 1; i < c.length - 1; i++) {
-    const p = c[i];
-    if (p.h1 && p.h2) continue;
-    const a = c[i - 1] || p, b = c[i + 1] || p;
-    const tx = (b.x - a.x) * 0.5, ty = (b.y - a.y) * 0.5;
-    const L = Math.hypot(tx, ty) || 1;
-    const k1 = Math.min(Math.hypot(p.x - a.x, p.y - a.y) * 0.42, L) / L;
-    const k2 = Math.min(Math.hypot(b.x - p.x, b.y - p.y) * 0.42, L) / L;
-    p.h1 = { x: p.x - tx * k1, y: p.y - ty * k1 };
-    p.h2 = { x: p.x + tx * k2, y: p.y + ty * k2 };
-  }
-  return c;
-}
-
 // 经典款：轮廓 = 贴合腕托的等距底部曲线 + 平滑侧边/顶部
 // 底部严格沿腕托的肾形/双球变形几何外扩 wMargin（原样折线，保留球间凹槽）；
 // 侧边与顶部由一条经过「腰点—肩点—顶点」控制点的向心 Catmull-Rom 样条生成，
@@ -1437,204 +1144,10 @@ function makeClassicShape() {
   const zBase = 0;
 
   const bottomPts = [];
-  const BSTEPS = 100;
-  let rawEdgeL = null; // 未加 overhang 的腕托原始侧缘 x（用于腰线基准）
-  let rawEdgeR = null;
-
-  // 采样某一腕托轮廓的“原始足迹”（未经 overhang 偏移），按 右→左 顺序返回 [{x, z}]。
-  // 变换链必须与 3D 腕托严格一致：单位球 → 变形 → 按半轴缩放 → 绕 y 轴旋转。
-  // Three.js 局部矩阵为 T·R·S（先缩放后旋转）；旧实现在单位空间里「先旋转后缩放」，
-  // 对非圆截面（rx≠rz）会产生与真实 cushion 完全不同的轮廓，旋转角越大偏差越大。
-  // opts：kind==='ball' 传 {rot: 弧度, ox: 球心 x 偏移}；noRot=true 时忽略旋转角
-  //       （用于推算与旋转无关的布局基准，见 buildFootprint）
-  function wristFootprint(kind, opts = {}) {
-    const raw = [];
-    if (kind === 'full') {
-      const rx = P.wW / 2, ry = P.wD / 2, k = P.wMorph;
-      const rad = opts.noRot ? 0 : THREE.MathUtils.degToRad(P.wMorphRot || 0);
-      const c = Math.cos(rad), s = Math.sin(rad);
-      // 足迹取「垫身坐标系下最左/最右两点之间、且经过最前端」的那半条轮廓：
-      // 未旋转时即 t∈[0,π]；旋转后轮廓最宽点随之偏移 t0，两端接缝仍落在最宽处，
-      // 否则旋转后会把侧缘切掉或留下缺口（t0 处 x 取极值，恒为正 → 起点是最右点）
-      const t0 = Math.atan2(ry * s, rx * c);
-      for (let i = 0; i <= BSTEPS; i++) {
-        const t = t0 + (i / BSTEPS) * Math.PI;     // 右→左沿前半圈
-        const x0u = Math.cos(t), z0u = Math.sin(t);
-        // 标准朝向先变形（肾型形状固定），旋转在缩放之后统一施加
-        let x1u = x0u, z1u = z0u;
-        if (k > 0) {
-          const g = Math.exp(-((x0u / 0.55) ** 2));
-          const front = Math.max(0, z0u);
-          z1u = z0u - k * 0.55 * g * front * front;
-          x1u = x0u * (1 + k * 0.12);
-        }
-        const px = x1u * rx, pz = z1u * ry;        // 缩放（mesh.scale）
-        raw.push({ x: c * px + s * pz,             // 绕 y 旋转，与 wristGroup.rotation.y 同向
-                   z: -s * px + c * pz });
-      }
-    } else if (kind === 'ball') {
-      // 单个双球：单位球 → 鹅蛋变形 → 缩放 → 绕 y 旋 wRot → 平移
-      const sx = P.wBW / 2, sz = P.wD / 2, e = P.wEgg;
-      const rad = opts.noRot ? 0 : (opts.rot || 0);
-      const c = Math.cos(rad), s = Math.sin(rad);
-      const ox = opts.ox || 0;
-      for (let i = 0; i <= BSTEPS; i++) {
-        const t = (i / BSTEPS) * Math.PI;          // 0..π，右→左沿前半圆
-        let xu = Math.cos(t), zu = Math.sin(t);
-        if (e) xu *= (1 + e * zu);                 // 鹅蛋：x 随 z 缩放
-        const px = xu * sx, pz = zu * sz;          // 缩放（mesh.scale）
-        raw.push({ x: ox + (c * px + s * pz),      // 绕 y 旋转（mesh.rotation.y）
-                   z: -s * px + c * pz });
-      }
-    } else { // none：无腕托时用一段扁椭圆作为底边足迹（局部坐标，中心在原点）
-      const rx = P.padW / 2, ry = P.padW * 0.25;
-      for (let i = 0; i <= BSTEPS; i++) {
-        const t = (i / BSTEPS) * Math.PI;
-        raw.push({ x: Math.cos(t) * rx, z: Math.sin(t) * ry });
-      }
-    }
-    return raw;
-  }
-
-  function segHit(a1, a2, b1, b2) {
-    const d1x = a2.x - a1.x, d1y = a2.y - a1.y;
-    const d2x = b2.x - b1.x, d2y = b2.y - b1.y;
-    const den = d1x * d2y - d1y * d2x;
-    if (Math.abs(den) < 1e-12) return null;
-    const t = ((b1.x - a1.x) * d2y - (b1.y - a1.y) * d2x) / den;
-    const s = ((b1.x - a1.x) * d1y - (b1.y - a1.y) * d1x) / den;
-    return (t > 1e-6 && t < 1 - 1e-6 && s > 1e-6 && s < 1 - 1e-6)
-      ? { x: a1.x + d1x * t, y: a1.y + d1y * t } : null;
-  }
-
-  // 偏移折线去环：交叉时保留最外圈（修复凹槽附近偏移自交）
-  function removeOffsetLoops(pts) {
-    for (let pass = 0; pass < 6; pass++) {
-      let done = true;
-      outer:
-      for (let i = 0; i < pts.length - 1; i++) {
-        for (let j = i + 2; j < pts.length - 1; j++) {
-          const hit = segHit(pts[i], pts[i + 1], pts[j], pts[j + 1]);
-          if (hit) {
-            pts.splice(i + 1, j - i, hit);
-            done = false;
-            break outer;
-          }
-        }
-      }
-      if (done) break;
-    }
-  }
-
-  // 把“原始足迹”沿曲线法向向外偏移 M，写入 out
-  // raw 必须按 右→左 顺序排列（out[0] 为右下，末尾为左下）
-  function offsetFootprint(raw, pushEdges, out) {
-    for (let i = 0; i < raw.length; i++) {
-      const p = raw[i];
-      const prev = raw[Math.max(0, i - 1)];
-      const next = raw[Math.min(raw.length - 1, i + 1)];
-      const dx = next.x - prev.x;
-      const dz = next.z - prev.z;
-      const len = Math.hypot(dx, dz) || 1;
-      let nx = dz / len, nz = -dx / len;
-      const rlen = Math.hypot(p.x, p.z) || 1;
-      if (nx * (p.x / rlen) + nz * (p.z / rlen) < 0) { nx = -nx; nz = -nz; }
-      out.push({ x: p.x + nx * M, y: -(zBase + p.z + nz * M) });
-    }
-    if (pushEdges) {
-      rawEdgeR = raw[0].x;
-      rawEdgeL = raw[raw.length - 1].x;
-    }
-    removeOffsetLoops(out);
-  }
-
-  // 生成一段完整足迹折线（含 overhang 偏移）写入 out。
-  // noRot=true 时按“未旋转”状态生成，只用于推算与旋转角无关的布局基准
-  // （垫身总长 + 腕托前后位置），使旋转腕托不再牵动整垫尺寸与腕托位移。
-  function buildFootprint(out, noRot) {
-    if (P.wristStyle === 'full') {
-      offsetFootprint(wristFootprint('full', { noRot }), !noRot, out);
-    } else if (P.wristStyle === 'balls') {
-      const rot = noRot ? 0 : THREE.MathUtils.degToRad(P.wRot);
-      const half = P.wGap / 2;
-      const rxb = P.wBW / 2;
-      // 右球：右→左；左球：右→左
-      const rightBall = wristFootprint('ball', { rot: -rot, ox: half, noRot });
-      const leftBall  = wristFootprint('ball', { rot:  rot, ox: -half, noRot });
-
-      // 足迹曲线 i 点的前向切线（中心差分）
-      function tanAt(arr, i) {
-        const a = arr[Math.max(0, i - 1)], b = arr[Math.min(arr.length - 1, i + 1)];
-        const l = Math.hypot(b.x - a.x, b.z - a.z) || 1;
-        return { x: (b.x - a.x) / l, z: (b.z - a.z) / l };
-      }
-
-      // 双球间过渡弧：以两端切线做三次 Hermite 桥，替换/连接两侧弧段
-      // kA/kB = 每侧被替换的采样数（0=保留原始相交尖角）
-      // n = 桥采样密度
-      function bridge(rawR, iA, rawL, iB, kA, kB, n) {
-        const A = rawR[iA], B = rawL[iB];
-        const mA = tanAt(rawR, iA), mB = tanAt(rawL, iB);
-        // 切线臂长 ≈ 被替换的弧弦长，且不超过两端距离的一半
-        const chordAB = Math.hypot(B.x - A.x, B.z - A.z);
-        const armA = Math.min(Math.hypot(rawR[Math.min(iA + kA, BSTEPS)].x - A.x,
-                                          rawR[Math.min(iA + kA, BSTEPS)].z - A.z) * 0.9,
-                              chordAB * 0.45);
-        const armB = Math.min(Math.hypot(rawL[Math.max(iB - kB, 0)].x - B.x,
-                                          rawL[Math.max(iB - kB, 0)].z - B.z) * 0.9,
-                              chordAB * 0.45);
-        const bpts = [];
-        for (let j = 1; j <= n; j++) {
-          const t = j / (n + 1), u = 1 - t;
-          bpts.push({
-            x: u*u*u*A.x + 3*u*u*t*(A.x + mA.x*armA) + 3*u*t*t*(B.x - mB.x*armB) + t*t*t*B.x,
-            z: u*u*u*A.z + 3*u*u*t*(A.z + mA.z*armA) + 3*u*t*t*(B.z - mB.z*armB) + t*t*t*B.z,
-          });
-        }
-        return { pts: bpts };
-      }
-
-      let raw;
-      if (half < rxb) {
-        // 两球重叠：找两曲线最近点对作为交接处
-        let bi = 0, bj = 0, bd = Infinity;
-        for (let i = 0; i <= BSTEPS; i++) {
-          for (let j = 0; j <= BSTEPS; j++) {
-            const dx = rightBall[i].x - leftBall[j].x;
-            const dz = rightBall[i].z - leftBall[j].z;
-            const dd = dx * dx + dz * dz;
-            if (dd < bd) { bd = dd; bi = i; bj = j; }
-          }
-        }
-        // 用独立过渡弧替换交点附近的原始相交尖角
-        const wJoin = P.wJoin != null ? P.wJoin : 16;
-        if (wJoin > 0 && bi >= 2 && bj <= BSTEPS - 2) {
-          const kA = Math.min(wJoin, bi - 1);
-          const kB = Math.min(wJoin, BSTEPS - 1 - bj);
-          const br = bridge(rightBall, bi - kA, leftBall, bj + kB, kA, kB, Math.max(10, kA));
-          raw = rightBall.slice(0, bi - kA + 1).concat(br.pts, leftBall.slice(bj + kB));
-        } else {
-          raw = rightBall.slice(0, bi + 1).concat(leftBall.slice(bj));
-        }
-      } else {
-        // 两球分离：同样插入一段独立过渡弧连接两球边缘
-        const wJoin = P.wJoin != null ? P.wJoin : 16;
-        const kSep = Math.max(2, Math.min(30, Math.round(BSTEPS * wJoin / 16 * 0.12)));
-        if (wJoin > 0 && BSTEPS - kSep >= 1 && kSep <= BSTEPS - 1) {
-          // 从两球相向端各回退若干采样，用过渡弧连接
-          const br = bridge(rightBall, BSTEPS - kSep, leftBall, kSep, kSep, kSep,
-                            Math.max(12, kSep));
-          raw = rightBall.slice(0, BSTEPS - kSep + 1).concat(br.pts, leftBall.slice(kSep));
-        } else {
-          raw = rightBall.concat(leftBall);
-        }
-      }
-      offsetFootprint(raw, !noRot, out);
-    } else {
-      offsetFootprint(wristFootprint('none'), !noRot, out);
-    }
-  }
-  buildFootprint(bottomPts, false);
+  // 足迹采样 / 外扩 / 双球过渡弧都在 src/footprint.js（纯几何，可单测）。
+  // 传 edges 收侧缘 x：同一帧内会跑两次（真实轮廓 + 布局基准），模块级变量会被第二次覆盖。
+  const edges = {};
+  buildFootprint(P, M, zBase, bottomPts, false, edges);
 
   // 阶段二：由腕托足迹推算总长，并把足迹平移到最终坐标系（原点=垫身中心）。
   // 局部坐标下 bottomPts.y = -(足迹 z)，故足迹最靠顶部处 y 最小、最靠底边处 y 最大。
@@ -1642,7 +1155,7 @@ function makeClassicShape() {
   // 外形，不再改变垫身总长与腕托前后位置。旧实现直接用旋转后足迹的纵向跨度反推总长，
   // 而该跨度随旋转角变化（侧缘点绕中心摆动）→ 垫身被拉长/缩短、腕托整体前后平移。
   const refPts = [];
-  buildFootprint(refPts, true);
+  buildFootprint(P, M, zBase, refPts, true, {});
   let refYMin = Infinity, refYMax = -Infinity;
   for (const p of refPts) {
     if (p.y < refYMin) refYMin = p.y;
@@ -1673,7 +1186,7 @@ function makeClassicShape() {
   // 两端锚点（pin）钉在底部足迹接缝处，切线继承足迹方向以保证 G1 衔接；
   // 中间锚点自由可拖，形状完全由锚点与切线手柄决定（不再有顶部/腰部标量参数）。
   // 首次使用或腕托尺寸变化导致 pin 失配时，由 bakeClassicCtrl() 生成初始锚点。
-  const ctrl = ensureClassicCtrl(pBL, pBR, dBLv, dBRv, topY);
+  const ctrl = ensureClassicCtrl(P, pBL, pBR, dBLv, dBRv, topY);
 
   // 采样贝塞尔链：每段按弦长自适应细分，保证曲率大处足够密
   const outlinePts = [];
@@ -2229,16 +1742,16 @@ const GEO_PARAM_KEYS = [
 // 下界对 0 基参数（thick / corner / bevel / wMargin / wGap / wEgg 等）恒为 0 ——
 // makeClassicShape 里 `wMargin = -1` 是"贴合足迹"的哨兵值，不能被夹成正数。
 const sliderMaxOf = {};
-// 控件标签 → 参数键。闸门要拿滑条上界，而 slider() 只拿得到 label，故需要这张表。
-// ⚠️ 新增几何类滑条时必须同步登记，否则该参数会退回"只按 schema 放行"的宽口径。
-const SLIDER_PARAM = {
-  '基础宽度': 'padW', '基础长度': 'padH', '圆角': 'corner',
-  '基础厚度': 'thick', '边缘倒角': 'bevel',
-  '隆起高度': 'wH', '腕托宽度': 'wW', '腕托旋转°': 'wMorphRot',
-  '单球宽度': 'wBW', '双球旋转°': 'wRot', '鹅蛋度': 'wEgg',
-  '双球过渡弧': 'wJoin', '前后长度': 'wD', '双球间距': 'wGap', '距底边': 'wPos',
-  '腕托顶距': 'wristTopGap', '外形超出腕托': 'wMargin',
-};
+/* 参与几何的滑条参数清单。闸门（geoClampOf）要拿滑条上界来收紧 schema 上界，
+   而 slider() 拿不到"这个滑条改的是哪个参数"，故由调用点显式传入。
+   ⚠️ 新增几何类滑条时必须传 paramKey，否则该参数会退回"只按 schema 放行"的宽口径。
+   历史：这张表原本是「中文标签 → 参数名」，靠匹配标签文案反查 —— 做了 i18n 之后
+   标签会随语言变，反查直接失效（且失效得很安静：闸门悄悄放宽，越界不再被拦）。 */
+const SLIDER_PARAM = [
+  'padW', 'padH', 'corner', 'thick', 'bevel',
+  'wH', 'wW', 'wMorphRot', 'wBW', 'wRot', 'wEgg',
+  'wJoin', 'wD', 'wGap', 'wPos', 'wristTopGap', 'wMargin',
+];
 function geoClampOf(key) {
   const s = PARAM_SCHEMA[key];
   if (!s || s.t !== 'num') return null;
@@ -2289,13 +1802,15 @@ function restoreGeoSnapshot() {
 function geoFail(kind, err, brokenKeys) {
   console.error('[几何兜底]', kind, err);
   geoFaulted = true;
-  const where = brokenKeys.length ? `参数 ${brokenKeys.slice(0, 4).join('、')}${brokenKeys.length > 4 ? ' 等' : ''} 越界` : '';
+  const keys = brokenKeys.slice(0, 4).join('、');
+  const more = brokenKeys.length > 4 ? T('cfg.more') : '';
+  const msg = err && err.message ? err.message : err;
   if (kind === 'fallback') {
-    toast(`几何重建失败：${where ? where + '，' : ''}已回退到上一个可用参数`
-      + `（${err && err.message ? err.message : err}）`, 'err', 6000);
+    const where = brokenKeys.length ? T('geo.rollbackWhere', { keys, more }) : '';
+    toast(T('geo.rollback', { where, msg }), 'err', 6000);
   } else {
-    toast('几何重建失败，已恢复默认参数：'
-      + `${err && err.message ? err.message : err}${where ? '（' + where + '）' : ''}`, 'err', 6000);
+    const where = brokenKeys.length ? T('geo.resetWhere', { keys, more }) : '';
+    toast(T('geo.reset', { msg, where }), 'err', 6000);
   }
 }
 
@@ -2328,8 +1843,10 @@ function guardedRebuild(body) {
       finally { geoRecovering = false; }
       return false;
     }
-    if (fixed.length) toast(`已收敛超出范围的几何参数：${fixed.slice(0, 3).join('、')}`
-      + `${fixed.length > 3 ? ' 等' : ''}`, 'err', 4000);
+    if (fixed.length) toast(T('geo.clamped', {
+      keys: fixed.slice(0, 3).join('、'),
+      more: fixed.length > 3 ? T('cfg.more') : '',
+    }), 'err', 4000);
     captureGeoSnapshot();
     return true;
   } finally {
@@ -2501,18 +2018,79 @@ function updateBackground() {
   }
 }
 
+/* ================= 国际化：把词典刷到 DOM 上 =================
+   两种来源统一处理：
+     · HTML 里写死的静态文案 —— 用 data-i18n / data-i18n-html / data-i18n-title /
+       data-i18n-aria / data-i18n-placeholder 标记，首次加载与每次切换语言时整体刷一遍；
+     · JS 动态生成的文案 —— 控件创建时已取过一次 T(key)，并把自己登记进 i18nNodes，
+       切换语言时由本函数按同一批属性重刷。
+   ⚠️ 只改文本，**不重建几何、不动参数**：语言切换必须是纯 UI 事件。
+   ⚠️ data-i18n-html 仅用于含 <b>/<small> 的文案（如上传占位），且词典内容均为工程内
+      常量，不含用户输入 —— 不要拿它渲染任何外部数据。 */
+const i18nNodes = [];
+function regI18n(el, kind, key) {
+  el.dataset['i18n' + kind] = key;
+  i18nNodes.push({ el, kind, key });
+  return el;
+}
+const I18N_ATTR = {
+  '':        el => { el.textContent = T(el.dataset.i18n); },
+  'Html':    el => { el.innerHTML = T(el.dataset.i18nHtml); },
+  'Title':   el => { el.title = T(el.dataset.i18nTitle); },
+  'Aria':    el => { el.setAttribute('aria-label', T(el.dataset.i18nAria)); },
+  'Placeholder': el => { el.placeholder = T(el.dataset.i18nPlaceholder); },
+};
+
 /* ================= UI 构建 ================= */
 const uiSyncers = []; // 控件同步器：导入配置后遍历刷新显示值
-// note：可选的悬停说明（title），用于交代"参数值 ≠ 成品尺寸"这类换算关系
-function slider(parent, label, min, max, step, get, set, note) {
+
+/* ---------- 参数变更分发（缺陷 3） ----------
+   控件回调不再手写 `P.x = v; rebuild()`，改由 PARAM_SCHEMA 的 onChange 决定后续动作。
+   好处：新增参数时"忘记置脏 / 忘记重建"从"靠人记"变成"表里必填"，
+   启动自检（missingChangeKinds）会直接点名漏登记的参数。
+
+   ⚠️ 贴图变换（t1.x / t2.x）不在这里：它们是二级字段，走 refreshTextures()
+   （同样只改 uniform，不碰几何）。 */
+const CHANGE_ACTION = {
+  rebuild:  () => { rebuild(); },
+  material: () => { updateMatBase(); updateMatRough(); updateEdgeColor(); refreshTextures(); },
+  render:   () => { updateLights(); updateBackground(); refreshTextures(); },
+  none:     () => {},
+};
+function applyParam(key, v) {
+  setPath(P, key, v);
+  const kind = (PARAM_SCHEMA[key] && PARAM_SCHEMA[key].onChange) || 'rebuild';
+  (CHANGE_ACTION[kind] || CHANGE_ACTION.rebuild)();
+  scheduleDraft();   // 自动草稿：任何参数变更都记一笔（防抖 600ms 后落盘）
+}
+// 少数参数除了通用动作还有额外副作用（改外形要同步分组显隐、经典款要 fit 视口）。
+// 这些**额外**动作仍写在控件处，通用动作交给 applyParam，两边不重复。
+function applyParamThen(key, v, extra) {
+  applyParam(key, v);
+  if (extra) extra();
+}
+
+// 启动自检：漏登记 onChange 的参数会退回 'rebuild'（最保守但最贵），
+// 与"漏登记 schema 导致导入时丢弃"是同一类静默故障，故同样在控制台点名。
+{
+  const noChange = Object.keys(P_DEFAULTS).filter(k => !PARAM_SCHEMA[k] || !PARAM_SCHEMA[k].onChange);
+  if (noChange.length) console.warn('[参数变更] 以下参数缺少 onChange，已按 rebuild 处理：', noChange);
+}
+// label 传**文案 key** 而不是字面中文：切换语言时要能整体重刷一遍（见 applyI18n）。
+// note：可选的悬停说明（title），同样传 key，用于交代"参数值 ≠ 成品尺寸"这类换算关系。
+function slider(parent, labelKey, min, max, step, get, set, noteKey, paramKey) {
   const row = document.createElement('div'); row.className = 'row';
-  const lb = document.createElement('label'); lb.textContent = label;
-  if (note) { lb.title = note; row.title = note; }
+  const lb = document.createElement('label');
+  lb.dataset.i18n = labelKey; lb.textContent = T(labelKey);
+  // 悬停说明挂在 label 与整行两处（行上的 title 命中面积更大），两处都要登记
+  if (noteKey) {
+    regI18n(lb, 'Title', noteKey); lb.title = T(noteKey);
+    regI18n(row, 'Title', noteKey); row.title = T(noteKey);
+  }
   const inp = document.createElement('input');
   inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = get();
   // 登记滑条上界，供几何入口的参数闸门（geoClampOf）对齐 —— 两者必须同源，
   // 否则会出现"滑条到头了 P 仍可越界"或"一碰滑条就被判越界"的双向错位。
-  const paramKey = SLIDER_PARAM[label];
   if (paramKey) sliderMaxOf[paramKey] = max;
   const val = document.createElement('span'); val.className = 'val'; val.textContent = get();
   // P1-3：oninput 期间进入 LOD（set 回调里的 rebuild 会用低精度几何），
@@ -2528,21 +2106,24 @@ function slider(parent, label, min, max, step, get, set, note) {
   row.append(lb, inp, val); parent.appendChild(row);
   return inp;
 }
-function colorRow(parent, label, get, set) {
+function colorRow(parent, labelKey, get, set) {
   const row = document.createElement('div'); row.className = 'row';
-  const lb = document.createElement('label'); lb.textContent = label;
+  const lb = document.createElement('label');
+  lb.dataset.i18n = labelKey; lb.textContent = T(labelKey);
   const inp = document.createElement('input'); inp.type = 'color'; inp.value = get();
   inp.oninput = () => set(inp.value);
   uiSyncers.push(() => { inp.value = get(); });
   row.append(lb, inp); parent.appendChild(row);
   return row;
 }
-function selectRow(parent, label, opts, get, set) {
+function selectRow(parent, labelKey, opts, get, set) {
   const row = document.createElement('div'); row.className = 'row';
-  const lb = document.createElement('label'); lb.textContent = label;
+  const lb = document.createElement('label');
+  lb.dataset.i18n = labelKey; lb.textContent = T(labelKey);
   const sel = document.createElement('select');
-  opts.forEach(([v, t]) => {
-    const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o);
+  opts.forEach(([v, tKey]) => {
+    const o = document.createElement('option'); o.value = v; o.textContent = T(tKey);
+    o.dataset.i18n = tKey; sel.appendChild(o);
   });
   sel.value = get();
   sel.onchange = () => set(sel.value);
@@ -2550,19 +2131,24 @@ function selectRow(parent, label, opts, get, set) {
   row.append(lb, sel); parent.appendChild(row);
   return sel;
 }
-function checkRow(parent, label, get, set) {
+function checkRow(parent, labelKey, get, set, paramKey) {
   const row = document.createElement('div'); row.className = 'row';
-  const lb = document.createElement('label'); lb.textContent = label;
+  const lb = document.createElement('label');
+  lb.dataset.i18n = labelKey; lb.textContent = T(labelKey);
   const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = get();
+  // 记下参数名：setCurveEdit() 要按它找回「编辑轮廓」复选框（按文案找会在切语言后失效）
+  if (paramKey) inp.dataset.param = paramKey;
   inp.onchange = () => set(inp.checked);
   uiSyncers.push(() => { inp.checked = get(); });
   row.append(lb, inp); parent.appendChild(row);
   return row;
 }
-function btnRow(parent, label, text, onClick) {
+function btnRow(parent, labelKey, textKey, onClick) {
   const row = document.createElement('div'); row.className = 'row';
-  const lb = document.createElement('label'); lb.textContent = label;
-  const b = document.createElement('button'); b.textContent = text;
+  const lb = document.createElement('label');
+  lb.dataset.i18n = labelKey; lb.textContent = T(labelKey);
+  const b = document.createElement('button');
+  b.dataset.i18n = textKey; b.textContent = T(textKey);
   b.style.cssText = 'flex:1;padding:5px 10px;border:0;border-radius:5px;background:#3a4150;color:#e6e9ef;cursor:pointer';
   b.onclick = onClick;
   row.append(lb, b); parent.appendChild(row);
@@ -2574,22 +2160,25 @@ const texUI = { t1: [], t2: [] }; // 记录控件以便画布拖拽后同步滑�
 // ⚠️ 只收 key 名字、每次经 P[key] 动态取值，不要在闭包里捕获 P.t1 / P.t2 对象：
 // 导入配置会整体换掉这两个对象（sanitizeParams 返回全新对象），捕获旧引用的话
 // 控件会写进游离对象 —— 拖动有反应、UI 读数也对，但画面永远不变且不报任何错。
-function texControls(el, key, title) {
+function texControls(el, key, titleKey) {
   const h = document.createElement('div');
-  h.className = 'hint'; h.style.marginTop = '6px'; h.textContent = title;
+  h.className = 'hint'; h.style.marginTop = '6px';
+  h.dataset.i18n = titleKey; h.textContent = T(titleKey);
   el.appendChild(h);
   const tp = () => P[key];
+  // 贴图变换是二级字段（t1.s 等），不进 applyParam，但同样要记草稿
   const track = (inp, prop) => {
     texUI[key].push({ inp, prop, val: inp.parentElement.querySelector('.val') });
     return inp;
   };
-  track(selectRow(el, '重复模式', [['clamp','不重复·边缘延伸'],['cutout','不重复'],['repeat','重复'],['mirror','镜像重复']],
-    () => tp().wrap, v => { tp().wrap = v; refreshTextures(); updateCutout(); }), 'wrap');
-  track(slider(el, '缩放', 0.2, 5, 0.01, () => tp().s, v => { tp().s = v; refreshTextures(); }), 's');
-  track(slider(el, '长宽比', 0.25, 4, 0.01, () => tp().asp, v => { tp().asp = v; refreshTextures(); }), 'asp');
-  track(slider(el, '偏移 X', -1, 1, 0.005, () => tp().ox, v => { tp().ox = v; refreshTextures(); }), 'ox');
-  track(slider(el, '偏移 Y', -1, 1, 0.005, () => tp().oy, v => { tp().oy = v; refreshTextures(); }), 'oy');
-  track(slider(el, '旋转°', -180, 180, 1, () => tp().r, v => { tp().r = v; refreshTextures(); }), 'r');
+  const setTexProp = (prop, v) => { tp()[prop] = v; refreshTextures(); scheduleDraft(); };
+  track(selectRow(el, 'ctl.wrap', [['clamp','wrap.clamp'],['cutout','wrap.cutout'],['repeat','wrap.repeat'],['mirror','wrap.mirror']],
+    () => tp().wrap, v => { setTexProp('wrap', v); updateCutout(); }), 'wrap');
+  track(slider(el, 'ctl.scale', 0.2, 5, 0.01, () => tp().s, v => setTexProp('s', v)), 's');
+  track(slider(el, 'ctl.aspect', 0.25, 4, 0.01, () => tp().asp, v => setTexProp('asp', v)), 'asp');
+  track(slider(el, 'ctl.offsetX', -1, 1, 0.005, () => tp().ox, v => setTexProp('ox', v)), 'ox');
+  track(slider(el, 'ctl.offsetY', -1, 1, 0.005, () => tp().oy, v => setTexProp('oy', v)), 'oy');
+  track(slider(el, 'ctl.rotate', -180, 180, 1, () => tp().r, v => setTexProp('r', v)), 'r');
 }
 function syncTexUI(key) {
   const tp = P[key];
@@ -2598,44 +2187,45 @@ function syncTexUI(key) {
     if (val) val.textContent = typeof tp[prop] === 'number' ? +tp[prop].toFixed(3) : tp[prop];
   });
 }
-texControls(document.getElementById('tex1Ctrls'), 't1', '— 主贴图变换 —');
-texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 —');
+texControls(document.getElementById('tex1Ctrls'), 't1', 'tex.group1');
+texControls(document.getElementById('tex2Ctrls'), 't2', 'tex.group2');
 
 /* --- 外形 --- */
 {
   const el = document.getElementById('shapeCtrls');
-  selectRow(el, '轮廓', [['rect','圆角矩形'],['ellipse','椭圆'],['stadium','胶囊形'],['classic','经典']],
-    () => P.shape, v => { P.shape = v; rebuild(); refreshShapeUI(); });
+  selectRow(el, 'ctl.shape', [['rect','shape.rect'],['ellipse','shape.ellipse'],['stadium','shape.stadium'],['classic','shape.classic']],
+    () => P.shape, v => applyParamThen('shape', v, () => { refreshShapeUI(); scheduleDraft(); }));
   // 宽度/圆角仅作用于非经典轮廓，经典款由腕托足迹 + 贝塞尔锚点决定，故归入 nonClassicRows 隐藏
   const nonClassicRows = [
     // 名称为"基础…"：这两个值是**倒角前**的轮廓尺寸，成品外廓还会再大 1.8 × 边缘倒角
-    slider(el, '基础宽度', 150, 340, 1, () => P.padW, v => { P.padW = v; rebuild(); if (curveEdit) fitEditOrtho(); },
-      '轮廓宽度（mm）。成品外廓 = 该值 + 1.8 × 边缘倒角'),
-    slider(el, '基础长度', 150, 340, 1, () => P.padH, v => { P.padH = v; rebuild(); },
-      '轮廓长度（mm）。成品外廓 = 该值 + 1.8 × 边缘倒角'),
-    slider(el, '圆角', 0, 110, 1, () => P.corner, v => { P.corner = v; rebuild(); }),
+    slider(el, 'ctl.padW', 150, 340, 1, () => P.padW, v => applyParamThen('padW', v, () => { if (curveEdit) fitEditOrtho(); }),
+      'note.padW', 'padW'),
+    slider(el, 'ctl.padH', 150, 340, 1, () => P.padH, v => applyParam('padH', v),
+      'note.padH', 'padH'),
+    slider(el, 'ctl.corner', 0, 110, 1, () => P.corner, v => applyParam('corner', v), null, 'corner'),
   ];
   // 经典款：上半轮廓由贝塞尔锚点决定，仅保留驱动足迹与总长的两个参数。
   // 拖动这两个滑条只平移两端 pin 锚点，用户拖出的形状不会被重置。
   const classicRows = [
-    slider(el, '腕托顶距', 40, 240, 1, () => P.wristTopGap, v => { P.wristTopGap = v; rebuild(); if (curveEdit) fitEditOrtho(); }),
-    checkRow(el, '编辑轮廓', () => curveEdit, v => setCurveEdit(v)),
-    slider(el, '外形超出腕托', 0, 10, 0.01, () => P.wMargin, v => { P.wMargin = v; rebuild(); if (curveEdit) fitEditOrtho(); }),
+    slider(el, 'ctl.wristTopGap', 40, 240, 1, () => P.wristTopGap, v => applyParamThen('wristTopGap', v, () => { if (curveEdit) fitEditOrtho(); }), null, 'wristTopGap'),
+    checkRow(el, 'ctl.curveEdit', () => curveEdit, v => setCurveEdit(v), 'curveEdit'),
+    slider(el, 'ctl.wMargin', 0, 10, 0.01, () => P.wMargin, v => applyParamThen('wMargin', v, () => { if (curveEdit) fitEditOrtho(); }), null, 'wMargin'),
   ];
   // 在“编辑轮廓”行右侧放“重置锚点”/“适应视图”按钮。
   // 注意必须挂到 .row 上：classicRows[1] 是 checkbox 这个 void 元素，
   // 直接 appendChild 到它上面的子元素不会渲染（按钮会凭空消失）。
   {
     const editRow = classicRows[1].closest('.row');
-    const mkBtn = (text, title, onClick) => {
+    const mkBtn = (textKey, titleKey, onClick) => {
       const b = document.createElement('button');
-      b.textContent = text; b.title = title;
+      b.dataset.i18n = textKey; b.textContent = T(textKey);
+      b.dataset.i18nTitle = titleKey; b.title = T(titleKey);
       b.style.cssText = 'padding:3px 10px;border:0;border-radius:5px;background:#3a4150;color:#e6e9ef;cursor:pointer;font-size:12px';
       b.onclick = onClick;
       editRow.appendChild(b);
       return b;
     };
-    mkBtn('重置锚点', '把全部锚点恢复为默认轮廓', () => {
+    mkBtn('btn.resetAnchors', 'btn.resetAnchorsTitle', () => {
       P.classicCtrl = structuredClone(DEFAULT_CLASSIC_CTRL);
       refreshShapeUI();
       // rebuild 失败（已 toast + 回退）时不要 fit：按半成品几何算包围盒会把视口缩放到荒谬尺度
@@ -2643,7 +2233,7 @@ texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 
     });
     // 视口已与 rebuild 解耦（拖锚点不再自动缩放），
     // 锚点被拖到画面外时需要一个手动 fit 入口把它找回来。
-    mkBtn('适应视图', '重新缩放平移，使整个轮廓回到画面中（拖动锚点时视口保持不变）', () => {
+    mkBtn('btn.fitView', 'btn.fitViewTitle', () => {
       if (curveEdit) { fitEditOrtho(); drawCurveOverlay(); }
     });
   }
@@ -2654,37 +2244,38 @@ texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 
     if (!isClassic && curveEdit) setCurveEdit(false);
   };
   refreshShapeUI();
-  slider(el, '基础厚度', 0, 10, 0.1, () => P.thick, v => { P.thick = v; rebuild(); },
-    '中间平板厚度（mm）。成品总厚 = 该值 + 2 × 边缘倒角');
-  slider(el, '边缘倒角', 0, 8, 0.1, () => P.bevel, v => { P.bevel = v; rebuild(); },
-    '边缘圆角半径（mm）。会让成品外廓每边外扩 0.9 × 该值、上下各加厚该值');
-  checkRow(el, '边缘随正面整体着色', () => P.edgeSame, v => { P.edgeSame = v; if (edgeColorRow) edgeColorRow.style.display = v ? 'none' : ''; rebuild(); });
-  const edgeColorRow = colorRow(el, '边缘颜色', () => P.edgeColor, v => { P.edgeColor = v; updateEdgeColor(); });
+  slider(el, 'ctl.thick', 0, 10, 0.1, () => P.thick, v => applyParam('thick', v),
+    'note.thick', 'thick');
+  slider(el, 'ctl.bevel', 0, 8, 0.1, () => P.bevel, v => applyParam('bevel', v),
+    'note.bevel', 'bevel');
+  checkRow(el, 'ctl.edgeSame', () => P.edgeSame, v => applyParamThen('edgeSame', v,
+    () => { if (edgeColorRow) edgeColorRow.style.display = v ? 'none' : ''; }));
+  const edgeColorRow = colorRow(el, 'ctl.edgeColor', () => P.edgeColor, v => applyParam('edgeColor', v));
   if (P.edgeSame && edgeColorRow) edgeColorRow.style.display = 'none';
   uiSyncers.push(() => { if (edgeColorRow) edgeColorRow.style.display = P.edgeSame ? 'none' : ''; });
-  slider(el, '表面粗糙', 0.05, 1, 0.01, () => P.rough, v => { P.rough = v; updateMatRough(); });
-  colorRow(el, '材质底色', () => P.matColor, v => { P.matColor = v; updateMatBase(); });
-  slider(el, '本色不透明度', 0, 1, 0.01, () => P.matOpacity, v => { P.matOpacity = v; updateMatBase(); });
-  slider(el, '贴图不透明度', 0, 1, 0.01, () => P.texOpacity, v => { P.texOpacity = v; updateMatBase(); });
+  slider(el, 'ctl.rough', 0.05, 1, 0.01, () => P.rough, v => applyParam('rough', v));
+  colorRow(el, 'ctl.matColor', () => P.matColor, v => applyParam('matColor', v));
+  slider(el, 'ctl.matOpacity', 0, 1, 0.01, () => P.matOpacity, v => applyParam('matOpacity', v));
+  slider(el, 'ctl.texOpacity', 0, 1, 0.01, () => P.texOpacity, v => applyParam('texOpacity', v));
 }
 
 /* --- 腕托 --- */
 {
   const el = document.getElementById('wristCtrls');
-  selectRow(el, '款式', [['none','无腕托'],['full','整体腕托'],['balls','双球腕托']],
-    () => P.wristStyle, v => { P.wristStyle = v; rebuild(); refreshWristUI(); });
+  selectRow(el, 'ctl.wristStyle', [['none','wrist.none'],['full','wrist.full'],['balls','wrist.balls']],
+    () => P.wristStyle, v => applyParamThen('wristStyle', v, refreshWristUI));
   const rows = {};
-  rows.h     = slider(el, '隆起高度', 5, 42, 0.5, () => P.wH, v => { P.wH = v; rebuild(); });
-  rows.w     = slider(el, '腕托宽度', 60, 260, 1, () => P.wW, v => { P.wW = v; rebuild(); });
-  rows.morph = slider(el, '肾形程度', 0, 1.5, 0.01, () => P.wMorph, v => { P.wMorph = v; rebuild(); });
-  rows.morphRot = slider(el, '腕托旋转°', -180, 180, 1, () => P.wMorphRot, v => { P.wMorphRot = v; rebuild(); });
-  rows.bw    = slider(el, '单球宽度', 40, 150, 1, () => P.wBW, v => { P.wBW = v; rebuild(); });
-  rows.rot   = slider(el, '双球旋转°', -60, 60, 1, () => P.wRot, v => { P.wRot = v; rebuild(); });
-    rows.egg   = slider(el, '鹅蛋度', -0.45, 0.45, 0.01, () => P.wEgg, v => { P.wEgg = v; rebuild(); });
-    rows.join  = slider(el, '双球过渡弧', 0, 40, 1, () => P.wJoin, v => { P.wJoin = v; rebuild(); });
-  rows.d     = slider(el, '前后长度', 40, 160, 1, () => P.wD, v => { P.wD = v; rebuild(); });
-  rows.gap   = slider(el, '双球间距', 20, 200, 1, () => P.wGap, v => { P.wGap = v; rebuild(); });
-  rows.pos   = slider(el, '距底边', 0, 120, 1, () => P.wPos, v => { P.wPos = v; rebuild(); });
+  rows.h     = slider(el, 'ctl.wH', 5, 42, 0.5, () => P.wH, v => applyParam('wH', v), null, 'wH');
+  rows.w     = slider(el, 'ctl.wW', 60, 260, 1, () => P.wW, v => applyParam('wW', v), null, 'wW');
+  rows.morph = slider(el, 'ctl.wMorph', 0, 1.5, 0.01, () => P.wMorph, v => applyParam('wMorph', v));
+  rows.morphRot = slider(el, 'ctl.wMorphRot', -180, 180, 1, () => P.wMorphRot, v => applyParam('wMorphRot', v), null, 'wMorphRot');
+  rows.bw    = slider(el, 'ctl.wBW', 40, 150, 1, () => P.wBW, v => applyParam('wBW', v), null, 'wBW');
+  rows.rot   = slider(el, 'ctl.wRot', -60, 60, 1, () => P.wRot, v => applyParam('wRot', v), null, 'wRot');
+  rows.egg   = slider(el, 'ctl.wEgg', -0.45, 0.45, 0.01, () => P.wEgg, v => applyParam('wEgg', v), null, 'wEgg');
+  rows.join  = slider(el, 'ctl.wJoin', 0, 40, 1, () => P.wJoin, v => applyParam('wJoin', v), null, 'wJoin');
+  rows.d     = slider(el, 'ctl.wD', 40, 160, 1, () => P.wD, v => applyParam('wD', v), null, 'wD');
+  rows.gap   = slider(el, 'ctl.wGap', 20, 200, 1, () => P.wGap, v => applyParam('wGap', v), null, 'wGap');
+  rows.pos   = slider(el, 'ctl.wPos', 0, 120, 1, () => P.wPos, v => applyParam('wPos', v), null, 'wPos');
   window.refreshWristUI = () => {
     const full = P.wristStyle === 'full', balls = P.wristStyle === 'balls';
     rows.w.closest('.row').style.display     = full ? '' : 'none';
@@ -2703,62 +2294,71 @@ texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 
 /* --- 光照 --- */
 {
   const el = document.getElementById('lightCtrls');
-  slider(el, '环境光', 0, 2, 0.01, () => P.hemi, v => { P.hemi = v; updateLights(); });
-  slider(el, '主光强度', 0, 5, 0.01, () => P.key, v => { P.key = v; updateLights(); });
-  slider(el, '主光方位', -180, 180, 1, () => P.az, v => { P.az = v; updateLights(); });
-  slider(el, '主光高度', 5, 90, 1, () => P.el, v => { P.el = v; updateLights(); });
-  colorRow(el, '灯光颜色', () => P.lightColor, v => { P.lightColor = v; updateLights(); });
-  slider(el, '环境反射', 0, 2, 0.01, () => P.env, v => { P.env = v; updateLights(); });
-  checkRow(el, '地面阴影', () => P.shadow, v => { P.shadow = v; updateLights(); });
+  slider(el, 'ctl.hemi', 0, 2, 0.01, () => P.hemi, v => applyParam('hemi', v));
+  slider(el, 'ctl.key', 0, 5, 0.01, () => P.key, v => applyParam('key', v));
+  slider(el, 'ctl.az', -180, 180, 1, () => P.az, v => applyParam('az', v));
+  slider(el, 'ctl.el', 5, 90, 1, () => P.el, v => applyParam('el', v));
+  colorRow(el, 'ctl.lightColor', () => P.lightColor, v => applyParam('lightColor', v));
+  slider(el, 'ctl.env', 0, 2, 0.01, () => P.env, v => applyParam('env', v));
+  checkRow(el, 'ctl.shadow', () => P.shadow, v => applyParam('shadow', v));
 }
 
 /* --- 导出 --- */
 {
   const el = document.getElementById('exportCtrls');
-  checkRow(el, '透明背景', () => P.transparent, v => { P.transparent = v; updateBackground(); });
-  colorRow(el, '背景颜色', () => P.bg, v => { P.bg = v; updateBackground(); });
-  checkRow(el, '导出时透明背景', () => P.exportTransparent, v => { P.exportTransparent = v; });
-  selectRow(el, '导出倍率', [['1','1x'],['2','2x'],['3','3x']], () => String(P.exportScale), v => P.exportScale = +v);
+  checkRow(el, 'ctl.transparent', () => P.transparent, v => applyParam('transparent', v));
+  colorRow(el, 'ctl.bg', () => P.bg, v => applyParam('bg', v));
+  checkRow(el, 'ctl.exportTransparent', () => P.exportTransparent, v => applyParam('exportTransparent', v));
+  selectRow(el, 'ctl.exportScale', [['1','1x'],['2','2x'],['3','3x']], () => String(P.exportScale), v => applyParam('exportScale', +v));
   // 配置名称：用于导出文件名
   {
     const row = document.createElement('div'); row.className = 'row';
-    const lb = document.createElement('label'); lb.textContent = '配置名称';
-    const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = '留空则用默认文件名'; inp.value = P.cfgName || '';
+    const lb = document.createElement('label');
+    lb.dataset.i18n = 'ctl.cfgName'; lb.textContent = T('ctl.cfgName');
+    const inp = document.createElement('input'); inp.type = 'text';
+    inp.dataset.i18nPlaceholder = 'ctl.cfgNamePh'; inp.placeholder = T('ctl.cfgNamePh');
+    inp.value = P.cfgName || '';
     inp.style.flex = '1'; inp.style.minWidth = '0';
-    inp.oninput = () => { P.cfgName = inp.value; };
+    inp.oninput = () => applyParam('cfgName', inp.value);
     uiSyncers.push(() => { inp.value = P.cfgName || ''; });
     row.append(lb, inp); el.appendChild(row);
   }
   const btn = document.createElement('button');
-  btn.className = 'btn'; btn.textContent = '导出预览图';
+  btn.className = 'btn'; btn.dataset.i18n = 'btn.exportPreview';
+  btn.textContent = T('btn.exportPreview');
   btn.onclick = exportPNG;
   el.appendChild(btn);
   const mbtn = document.createElement('button');
-  mbtn.className = 'btn'; mbtn.textContent = '导出模型渲染图';
+  mbtn.className = 'btn'; mbtn.dataset.i18n = 'btn.exportModelPNG';
+  mbtn.textContent = T('btn.exportModelPNG');
   mbtn.style.marginTop = '6px';
   mbtn.onclick = exportModelPNG;
   el.appendChild(mbtn);
   // 3D 模型导出
-  const mk3d = (text, kind) => {
+  const mk3d = (textKey, kind) => {
     const b = document.createElement('button');
-    b.className = 'btn'; b.textContent = text; b.style.marginTop = '6px';
+    b.className = 'btn'; b.dataset.i18n = textKey;
+    b.textContent = T(textKey); b.style.marginTop = '6px';
     b.onclick = () => exportModel3D(kind);
     el.appendChild(b);
   };
-  mk3d('导出模型 (GLB，含贴图)', 'glb');
-  mk3d('导出模型 (STL，打印)', 'stl');
-  mk3d('导出模型 (OBJ)', 'obj');
+  mk3d('btn.exportGLB', 'glb');
+  mk3d('btn.exportSTL', 'stl');
+  mk3d('btn.exportOBJ', 'obj');
   // 配置导入 / 导出
-  const mkBtn = (text, fn) => { const b = document.createElement('button'); b.className = 'btn'; b.textContent = text; b.style.marginTop = '6px'; b.onclick = fn; el.appendChild(b); return b; };
-  mkBtn('导出配置 (JSON)', exportConfigJSON);
-  mkBtn('导出配置 (ZIP，含贴图)', exportConfigZip);
+  const mkBtn = (textKey, fn) => {
+    const b = document.createElement('button'); b.className = 'btn'; b.dataset.i18n = textKey;
+    b.textContent = T(textKey); b.style.marginTop = '6px'; b.onclick = fn; el.appendChild(b); return b;
+  };
+  mkBtn('btn.exportCfgJson', exportConfigJSON);
+  mkBtn('btn.exportCfgZip', exportConfigZip);
   const imp = document.createElement('input');
   imp.type = 'file'; imp.accept = '.json,.zip,application/json,application/zip'; imp.style.display = 'none';
   imp.onchange = () => {
-    if (imp.files[0]) importConfigFile(imp.files[0]).catch(e => toast('导入失败：' + e.message, 'err'));
+    if (imp.files[0]) importConfigFile(imp.files[0]).catch(e => toast(T('cfg.importFailed', { msg: e.message }), 'err'));
     imp.value = '';
   };
-  const impBtn = mkBtn('导入配置 (JSON / ZIP)', () => imp.click());
+  const impBtn = mkBtn('btn.importCfg', () => imp.click());
   impBtn.style.background = '#2f6f4f';
   el.appendChild(imp);
 }
@@ -2766,10 +2366,10 @@ texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 
 /* --- 调试 --- */
 {
   const el = document.getElementById('debugCtrls');
-  checkRow(el, 'rebuild 耗时打到控制台', () => dbgRebuild, v => window.setDbgRebuild(v));
-  btnRow(el, '统计清零', '清空', () => {
+  checkRow(el, 'ctl.dbgRebuild', () => dbgRebuild, v => window.setDbgRebuild(v));
+  btnRow(el, 'ctl.dbgReset', 'btn.clear', () => {
     dbgReset();
-    console.log('[rebuild] 统计已清零');
+    console.log(T('dbg.cleared'));
   });
 }
 
@@ -2802,7 +2402,7 @@ texControls(document.getElementById('tex2Ctrls'), 't2', '— 腕托贴图变换 
   // 配置文件导入（复用已有 importConfigFile）
   const cfgFile = document.getElementById('cfgFile');
   cfgFile.addEventListener('change', () => {
-    if (cfgFile.files[0]) importConfigFile(cfgFile.files[0]).catch(e => toast('导入失败：' + e.message, 'err'));
+    if (cfgFile.files[0]) importConfigFile(cfgFile.files[0]).catch(e => toast(T('cfg.importFailed', { msg: e.message }), 'err'));
     cfgFile.value = '';
   });
 })();
@@ -2817,7 +2417,7 @@ function bindDropzone(dzId, fileId, onImg) {
   if (pbtn) pbtn.onclick = async e => {
     e.stopPropagation();
     if (!navigator.clipboard || !navigator.clipboard.read) {
-      toast('当前浏览器不支持主动读取剪贴板，请改用文件上传或拖拽。', 'err');
+      toast(T('tex.pasteUnsupported'), 'err');
       return;
     }
     pbtn.disabled = true;
@@ -2828,10 +2428,10 @@ function bindDropzone(dzId, fileId, onImg) {
         const type = it.types.find(t => t.startsWith('image/'));
         if (type) { file = await it.getType(type); break; }
       }
-      if (!file) { toast('剪贴板中没有图片。', 'err'); return; }
+      if (!file) { toast(T('tex.pasteEmpty'), 'err'); return; }
       loadImage(file, onImg, dz);
     } catch (err) {
-      toast('无法读取剪贴板：' + (err && err.message ? err.message : err) + '（需用户已授权剪贴板读取权限）', 'err');
+      toast(T('tex.pasteFailed', { msg: (err && err.message) || err }), 'err');
     } finally {
       pbtn.disabled = false;
     }
@@ -2844,7 +2444,7 @@ function loadImage(file, onImg, dz) {
   rd.onload = () => onImg(rd.result, dz);
   rd.onerror = () => {
     console.error('[读取文件失败]', rd.error);
-    toast('读取文件失败：' + ((rd.error && rd.error.message) || '未知错误'), 'err');
+    toast(T('tex.readFailed', { msg: (rd.error && rd.error.message) || T('cfg.unknownErr') }), 'err');
   };
   rd.readAsDataURL(file);
 }
@@ -2880,22 +2480,22 @@ function dzPreviewSrc(t, url) {
 bindDropzone('dz1', 'file1', (url, dz) => {
   makeTex(url, t => {
     setTex(1, t); refreshTextures(); rebuild();
-    setDZPreview(dz, dzPreviewSrc(t, url), () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); }));
+    setDZPreview(dz, dzPreviewSrc(t, url), () => resetDZ('dz1', T('tex.drop1'), () => { clearTex(1); rebuild(); }));
   }, err => texLoadFailed(1, err));
 });
 bindDropzone('dz2', 'file2', (url, dz) => {
   makeTex(url, t => {
     setTex(2, t); refreshTextures(); rebuild();
-    setDZPreview(dz, dzPreviewSrc(t, url), () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); }));
+    setDZPreview(dz, dzPreviewSrc(t, url), () => resetDZ('dz2', T('tex.drop2'), () => { clearTex(2); refreshTextures(); rebuild(); }));
   }, err => texLoadFailed(2, err));
 });
 // 贴图加载失败时不留下"半截状态"：槽位保持原样，预览回到占位文案（P0-2）
 // 用户主动取消超尺寸处理不算失败，用普通提示（不是红色报错）。
 function texLoadFailed(slot, err) {
-  const name = slot === 1 ? '主贴图' : '腕托贴图';
-  if (err && err.cancelled) { toast(`${name}未应用：已取消处理超尺寸图片`); return; }
-  const why = err && err.message ? err.message : '文件可能已损坏或不是受支持的图片格式';
-  toast(`${name}加载失败，未应用：${why}`, 'err', 4000);
+  const name = T(slot === 1 ? 'tex.main' : 'tex.wrist');
+  if (err && err.cancelled) { toast(T('tex.cancelled', { name })); return; }
+  const why = err && err.message ? err.message : T('tex.fileHint');
+  toast(T('tex.lineFailed', { name, msg: why }), 'err', 4000);
 }
 function resetDZ(id, html, clearFn) {
   document.getElementById(id).innerHTML = html;
@@ -2922,7 +2522,8 @@ function setDragMode(m, keepControls) {
   if (m === 'view') {
     modeHint.style.display = 'none';
   } else {
-    modeHint.textContent = `正在编辑${m === 't1' ? '主贴图' : '腕托贴图'}：拖拽=移动  滚轮=缩放  Shift+滚轮=旋转`;
+    modeHint.dataset.i18n = 'hint.texMode';
+    modeHint.textContent = T('hint.texMode', { name: T(m === 't1' ? 'tex.main' : 'tex.wrist') });
     modeHint.style.display = 'block';
   }
 }
@@ -2944,7 +2545,7 @@ canvas.addEventListener('pointermove', e => {
   tp.ox = THREE.MathUtils.clamp(tp.ox - (e.clientX - lastPX) * k, -1, 1);
   tp.oy = THREE.MathUtils.clamp(tp.oy + (e.clientY - lastPY) * k, -1, 1);
   lastPX = e.clientX; lastPY = e.clientY;
-  refreshTextures(); syncTexUI(dragMode);
+  refreshTextures(); syncTexUI(dragMode); scheduleDraft();
 });
 const endPan = () => panning = false;
 canvas.addEventListener('pointerup', endPan);
@@ -2970,30 +2571,10 @@ function uvAtPoint(e) {
 // 改一处必然漏一处 —— 触屏捏合最初就是因为只写 `tp.s = ...` 而没有反解偏移，
 // 表现为「放大后贴图整块从手指下溜走」。
 function zoomTexAbout(tp, t, ns, m) {
-  if (!m || !t || !t.image) { tp.s = ns; return; }
-  const a0 = t.image.height ? t.image.width / t.image.height : 1;
-  const a = a0 * (tp.asp || 1);
-  const fx = a >= 1 ? 1 / a : 1, fy = a >= 1 ? 1 : a;
-  const rad = THREE.MathUtils.degToRad(tp.r);
-  const c = Math.cos(rad), s = Math.sin(rad);
-  // 贴图坐标 = R·S·(uv-0.5) + 0.5 + offset（与 three.js uvTransform 一致）
-  const texelAt = (sc, ox, oy) => {
-    const rx = sc * fx, ry = sc * fy;
-    const du = (m.u - 0.5) * rx, dv = (m.v - 0.5) * ry;
-    return {
-      u: c * du + s * dv + 0.5 + ox + (1 - rx) / 2,
-      v: -s * du + c * dv + 0.5 + oy + (1 - ry) / 2,
-    };
-  };
-  const p = texelAt(tp.s, tp.ox, tp.oy);   // 当前锚点处的贴图坐标
-  const rx2 = ns * fx, ry2 = ns * fy;
-  const du2 = (m.u - 0.5) * rx2, dv2 = (m.v - 0.5) * ry2;
-  // 反解新偏移，使缩放后锚点处贴图坐标不变
-  const offU = p.u - (c * du2 + s * dv2 + 0.5);
-  const offV = p.v - (-s * du2 + c * dv2 + 0.5);
-  tp.s = ns;
-  tp.ox = THREE.MathUtils.clamp(offU - (1 - rx2) / 2, -1, 1);
-  tp.oy = THREE.MathUtils.clamp(offV - (1 - ry2) / 2, -1, 1);
+  // 反解本体在 src/textureMath.js（纯函数，可单测）。无贴图时退化成"只改 s"。
+  const r = _zoomTexAbout(tp, t && t.image ? t.image.width : 0,
+                          t && t.image ? t.image.height : 0, ns, m, THREE.MathUtils.clamp);
+  tp.s = r.s; tp.ox = r.ox; tp.oy = r.oy;
 }
 // 以鼠标所在位置为锚点缩放贴图（滚轮）
 // ⚠️ 符号不可取反回 `-e.deltaY`：向上滚（deltaY < 0）必须让 s **变小**（= 贴图放大），
@@ -3011,7 +2592,7 @@ canvas.addEventListener('wheel', e => {
   } else {
     zoomTexAt(tp, dragMode === 't1' ? tex1 : tex2, e);
   }
-  refreshTextures(); syncTexUI(dragMode);
+  refreshTextures(); syncTexUI(dragMode); scheduleDraft();
 }, { passive: false });
 
 /* ---------- 触屏双指手势：贴图缩放 / 旋转 ----------
@@ -3097,7 +2678,7 @@ canvas.addEventListener('touchmove', e => {
   // 而贴图旋转参数 r>0 在画面上是逆时针（uv 的 v 轴向上，叠加 uvAtPoint 的 v = 0.5 - z/S）。
   // 两者反向，故此处减号不可省 —— 用加号会让手指顺时针时贴图逆时针转。
   tp.r = THREE.MathUtils.clamp(pinch.r0 - (a - pinch.a0), -360, 360);
-  refreshTextures(); syncTexUI(dragMode);
+  refreshTextures(); syncTexUI(dragMode); scheduleDraft();
 }, { passive: false });
 const endPinch = () => { pinch = null; };
 canvas.addEventListener('touchend', endPinch);
@@ -3114,17 +2695,17 @@ stage.addEventListener('drop', e => {
   const rd = new FileReader();
   rd.onerror = () => {   // P0-2：读取失败（文件被占用 / 过大）要提示，不能无声无息
     console.error('[读取文件失败]', rd.error);
-    toast('读取文件失败：' + ((rd.error && rd.error.message) || '未知错误'), 'err');
+    toast(T('tex.readFailed', { msg: (rd.error && rd.error.message) || T('cfg.unknownErr') }), 'err');
   };
   rd.onload = () => {
     const url = rd.result;
     if (!tex1) {
       makeTex(url, t => { setTex(1, t); refreshTextures(); rebuild();
-        setDZPreview(document.getElementById('dz1'), dzPreviewSrc(t, url), () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); })); },
+        setDZPreview(document.getElementById('dz1'), dzPreviewSrc(t, url), () => resetDZ('dz1', T('tex.drop1'), () => { clearTex(1); rebuild(); })); },
         err => texLoadFailed(1, err));
     } else {
       makeTex(url, t => { setTex(2, t); refreshTextures(); rebuild();
-        setDZPreview(document.getElementById('dz2'), dzPreviewSrc(t, url), () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); })); },
+        setDZPreview(document.getElementById('dz2'), dzPreviewSrc(t, url), () => resetDZ('dz2', T('tex.drop2'), () => { clearTex(2); refreshTextures(); rebuild(); })); },
         err => texLoadFailed(2, err));
     }
   };
@@ -3261,7 +2842,8 @@ function setCurveEdit(on) {
     // 这样即使 curveLayer 被改为 pointer-events:none / z-index 变化，相机也不会被拖走。
     setDragMode('view', true);
     controls.enabled = false;
-    modeHint.textContent = '编辑轮廓：拖圆点=移动锚点  拖方块=调切线  Shift=切线独立  双击=加点  右键=删点';
+    modeHint.dataset.i18n = 'hint.curveMode';
+    modeHint.textContent = T('hint.curveMode');
     modeHint.style.display = 'block';
     resizeCurveLayer();   // 先缓存画布尺寸，fitEditOrtho() 要用它算 aspect
     fitEditOrtho();
@@ -3278,9 +2860,11 @@ function setCurveEdit(on) {
     // 相机是从 prevViewPos 直接复位的，不经 OrbitControls，必须显式置脏
     markRenderDirty();
   }
-  // 同步复选框显示状态
+  // 同步复选框显示状态。
+  // ⚠️ 不能按"文案包含『编辑轮廓』"来找：切到英文后文案变成 "Edit outline"，
+  //    匹配不到 → 复选框停留在旧状态，与 curveEdit 不一致。
   document.querySelectorAll('#shapeCtrls input[type=checkbox]').forEach(cb => {
-    if (cb.parentElement.textContent.includes('编辑轮廓')) cb.checked = curveEdit;
+    if (cb.dataset.param === 'curveEdit') cb.checked = curveEdit;
   });
   // 切换编辑模式只换相机与叠加层，**不重建几何**：
   // 倒角在所有模式下都启用（buildPad 恒 bevelEnabled: P.bevel > 0），不存在"进入时关 bevel"这回事。
@@ -3529,7 +3113,7 @@ function exportPNG(opts) {
     url = renderer.domElement.toDataURL('image/png');
   } catch (err) {
     console.error('[导出预览图]', err);
-    toast('预览图导出失败：' + ((err && err.message) || err), 'err');
+    toast(T('exp.previewFailed', { msg: (err && err.message) || err }), 'err');
     return null;
   } finally {
     // 恢复预览状态
@@ -3632,7 +3216,7 @@ function exportModelPNG(opts) {
   const scale = P.exportScale;
   const cam = activeCam();
   const objs = modelParts();
-  if (!objs.length) { toast('模型尚未构建，无法导出', 'err'); return; }
+  if (!objs.length) { toast(T('exp.modelNotReady'), 'err'); return; }
 
   const fullW = Math.max(1, stage.clientWidth), fullH = Math.max(1, stage.clientHeight);
   // 保证投影用的相机与屏幕上看到的完全一致（aspect 可能因窗口变化而未同步）
@@ -3683,7 +3267,7 @@ function exportModelPNG(opts) {
     url = cropTransparentPNG(renderer.domElement);
   } catch (err) {
     console.error('[导出模型渲染图]', err);
-    toast('模型渲染图导出失败：' + ((err && err.message) || err), 'err');
+    toast(T('exp.modelPngFailed', { msg: (err && err.message) || err }), 'err');
     return null;
   } finally {
     // 恢复预览状态（顺序与 exportPNG 一致：先恢复相机与场景，再恢复画布尺寸）
@@ -3849,7 +3433,7 @@ let exportBusy = false;
 async function exportModel3D(kind) {
   if (exportBusy) return;                       // GLB 编码是异步的，防止连点导出多份
   ensureFullQuality();   // P1-3：导出的网格必须是全质量，LOD 版本会直接改变成品外形
-  if (!modelParts().length) { toast('模型尚未构建，无法导出', 'err'); return; }
+  if (!modelParts().length) { toast(T('exp.modelNotReady'), 'err'); return; }
   exportBusy = true;
   const base = safeFileName(P.cfgName, 'mousepad-3d');
   let root = null;
@@ -3859,26 +3443,26 @@ async function exportModel3D(kind) {
   try {
     const C = await loadExporter(kind);
     if (kind === 'glb') {
-      toast('正在生成 GLB…', '', 1500);
+      toast(T('exp.glbDoing'), '', 1500);
       root = buildExportRoot({ bakeUV: true, unit: UNIT_M });
       const buf = await new Promise((res, rej) =>
         new C().parse(root, res, rej, { binary: true, onlyVisible: true, maxTextureSize: 4096 }));
       downloadBlob(new Blob([buf], { type: 'model/gltf-binary' }), base + '.glb');
-      toast('已导出 GLB（含材质与贴图，1 单位 = 1m）', 'ok');
+      toast(T('exp.glbDone'), 'ok');
     } else if (kind === 'stl') {
       root = buildExportRoot({ unit: UNIT_MM });
       const dv = new C().parse(root, { binary: true });
       downloadBlob(new Blob([dv], { type: 'model/stl' }), base + '.stl');
-      toast('已导出 STL（仅几何，1 单位 = 1mm）', 'ok');
+      toast(T('exp.stlDone'), 'ok');
     } else {
       root = buildExportRoot({ unit: UNIT_MM });
       const txt = new C().parse(root);
       downloadBlob(new Blob([txt], { type: 'text/plain' }), base + '.obj');
-      toast('已导出 OBJ（仅几何、无材质，1 单位 = 1mm）', 'ok');
+      toast(T('exp.objDone'), 'ok');
     }
   } catch (e) {
     console.error('[导出模型]', e);
-    toast('模型导出失败：' + ((e && e.message) || e), 'err');
+    toast(T('exp.modelFailed', { msg: (e && e.message) || e }), 'err');
   } finally {
     if (root) disposeExportRoot(root);
     exportBusy = false;
@@ -3886,143 +3470,25 @@ async function exportModel3D(kind) {
 }
 
 /* ================= 配置导入 / 导出 ================= */
-// —— 最小 ZIP（store 模式，无压缩，零依赖）+ CRC32 ——
-const crcTable = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
-  return t;
-})();
-function crc32(bytes) {
-  let c = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-// 大数组安全转 base64（避免 String.fromCharCode(...大数组) 栈溢出）
-function b64FromBytes(u8) {
-  let s = ''; const CHUNK = 0x8000;
-  for (let i = 0; i < u8.length; i += CHUNK) s += String.fromCharCode.apply(null, u8.subarray(i, i + CHUNK));
-  return btoa(s);
-}
-// 将若干文件 [{name, bytes}] 打包成 store 模式 zip 的 Blob
-function makeZip(files) {
-  const enc = new TextEncoder();
-  const chunks = [], central = [];
-  let offset = 0;
-  for (const f of files) {
-    const data = f.bytes;
-    const nameBytes = enc.encode(f.name);
-    const crc = crc32(data);
-    const local = new Uint8Array(30 + nameBytes.length + data.length);
-    const dv = new DataView(local.buffer);
-    dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true); dv.setUint16(6, 0, true);
-    dv.setUint16(8, 0, true); dv.setUint16(10, 0, true); // store
-    dv.setUint32(14, crc, true); dv.setUint32(18, data.length, true); dv.setUint32(22, data.length, true);
-    dv.setUint16(26, nameBytes.length, true); dv.setUint16(28, 0, true);
-    local.set(nameBytes, 30); local.set(data, 30 + nameBytes.length);
-    chunks.push(local);
-    const cd = new Uint8Array(46 + nameBytes.length);
-    const cdv = new DataView(cd.buffer);
-    cdv.setUint32(0, 0x02014b50, true); cdv.setUint16(4, 20, true); cdv.setUint16(6, 20, true);
-    cdv.setUint16(8, 0, true); cdv.setUint16(10, 0, true); cdv.setUint16(12, 0, true);
-    cdv.setUint32(16, crc, true); cdv.setUint32(20, data.length, true); cdv.setUint32(24, data.length, true);
-    cdv.setUint16(28, nameBytes.length, true); cdv.setUint16(30, 0, true); cdv.setUint16(32, 0, true);
-    cdv.setUint16(34, 0, true); cdv.setUint16(36, 0, true); cdv.setUint32(38, 0, true);
-    cdv.setUint32(42, offset, true);
-    cd.set(nameBytes, 46);
-    central.push(cd);
-    offset += local.length;
-  }
-  let centralSize = 0; central.forEach(c => centralSize += c.length);
-  const centralOffset = offset;
-  const end = new Uint8Array(22);
-  const edv = new DataView(end.buffer);
-  edv.setUint32(0, 0x06054b50, true); edv.setUint16(8, files.length, true);
-  edv.setUint16(10, files.length, true); edv.setUint32(12, centralSize, true);
-  edv.setUint32(16, centralOffset, true); edv.setUint16(20, 0, true);
-  const blob = new Blob([...chunks, ...central, end], { type: 'application/zip' });
-  return blob;
-}
-// 解析 store 模式 zip，返回 Map<name, Uint8Array>
-function parseZip(bytes) {
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const files = new Map();
-  // 从末尾 EOCD 找 central directory 偏移
-  let eocd = -1;
-  for (let i = bytes.length - 22; i >= 0; i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
-  if (eocd < 0) throw new Error('不是有效的 ZIP 文件');
-  const cdOffset = dv.getUint32(eocd + 16, true);
-  let p = cdOffset;
-  const count = dv.getUint16(eocd + 10, true);
-  for (let i = 0; i < count; i++) {
-    // 目录项头部定长 46 字节：先判越界再读。否则 p 越界会抛 RangeError，
-    // 被上层 catch 后统一报成"不是有效的 ZIP 文件"，掩盖真实的目录损坏。
-    if (p < 0 || p + 46 > bytes.length) throw new Error('ZIP 目录已损坏');
-    if (dv.getUint32(p, true) !== 0x02014b50) break;
-    const method = dv.getUint16(p + 10, true);
-    const crc = dv.getUint32(p + 16, true);
-    const compSize = dv.getUint32(p + 20, true);
-    const nameLen = dv.getUint16(p + 28, true);
-    const extraLen = dv.getUint16(p + 30, true);
-    const commentLen = dv.getUint16(p + 32, true);
-    const localOffset = dv.getUint32(p + 42, true);
-    const nameBytes = bytes.subarray(p + 46, p + 46 + nameLen);
-    const name = new TextDecoder().decode(nameBytes);
-    // P0-2：打包端只用 store（method 0），故 deflate(8) 等压缩条目一律拒绝。
-    // 旧实现把它们当作原始字节直接吐出，上层会据此拼出"看起来合法"的 dataURL，
-    // 解码在 <img> 内部失败且无 onError → 静默无贴图，却提示"配置已导入"。
-    if (method !== 0) throw new Error(`ZIP 条目 "${name}" 使用了不支持的压缩方式（method=${method}）`);
-    // 越界保护：localOffset / compSize 来自文件，可能把读指针指到缓冲区之外
-    if (localOffset + 30 > bytes.length || localOffset < 0) throw new Error(`ZIP 条目 "${name}" 的偏移越界`);
-    const ldv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const dataOff = localOffset + 30 + ldv.getUint16(localOffset + 26, true) + ldv.getUint16(localOffset + 28, true);
-    if (dataOff + compSize > bytes.length) throw new Error(`ZIP 条目 "${name}" 的数据越界`);
-    const data = bytes.subarray(dataOff, dataOff + compSize);
-    // CRC 失败必须抛错而不是 console.warn：损坏的数据继续走下去同样只会静默失败
-    if (crc32(data) !== crc) throw new Error(`ZIP 条目 "${name}" 校验失败（文件已损坏）`);
-    files.set(name, data);
-    p += 46 + nameLen + extraLen + commentLen;
-  }
-  return files;
+// MAX_CONFIG_BYTES / CONFIG_VERSION / serializeConfig / makeZip / parseZip 等
+// 都已搬进 src/config.js，这里是剩下的「会读写页面状态」的部分。
+
+// 槽位 → 纹理对象。模块化的 config.js 不该反向依赖页面状态，故由本文件注入。
+const texOf = slot => (slot === 1 ? tex1 : tex2);
+
+// 清空一个贴图槽位并让预览区回到占位文案（P1-1：导入即完全对齐配置文件内容）
+function resetTexSlot(slot) {
+  clearTex(slot);
+  if (slot === 1) resetDZ('dz1', T('tex.drop1'), () => {});
+  else resetDZ('dz2', T('tex.drop2'), () => {});
 }
 
-// —— 配置序列化 ——
-function texturePayload(slot) {
-  const tex = slot === 1 ? tex1 : tex2;
-  if (!tex || !tex.image || !tex.image.src || tex.image.src.indexOf('data:') !== 0) return null;
-  const src = tex.image.src;
-  const m = src.match(/^data:(image\/[a-z]+);base64,(.*)$/);
-  if (!m) return null;
-  return { name: slot === 1 ? 'tex1' : 'tex2', mime: m[1], base64: m[2] };
-}
-function serializeConfig(withTextures) {
-  const cfg = { type: '3dm-config', version: 1, params: P };
-  if (withTextures) {
-    const t = [];
-    const t1 = texturePayload(1), t2 = texturePayload(2);
-    if (t1) t.push(t1); if (t2) t.push(t2);
-    if (t.length) cfg.textures = t;
-  }
-  return cfg;
-}
-function downloadBlob(blob, filename) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-// 由配置名称生成安全文件名：去除路径分隔符等非法字符，空格转下划线；留空回退默认名
-function safeFileName(name, fallback) {
-  const s = (name || '').trim();
-  if (!s) return fallback;
-  const cleaned = s.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_').replace(/^\.+|\.+$/g, '').slice(0, 80);
-  return cleaned || fallback;
-}
 function exportConfigJSON() {
-  const blob = new Blob([JSON.stringify(serializeConfig(false), null, 2)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify(serializeConfig(P, false, texOf), null, 2)], { type: 'application/json' });
   downloadBlob(blob, safeFileName(P.cfgName, 'mousepad-config') + '.json');
 }
 function exportConfigZip() {
-  const cfg = serializeConfig(true);
+  const cfg = serializeConfig(P, true, texOf);
   const enc = new TextEncoder();
   const files = [{ name: 'config.json', bytes: enc.encode(JSON.stringify(cfg, null, 2)) }];
   (cfg.textures || []).forEach(t => {
@@ -4030,25 +3496,13 @@ function exportConfigZip() {
     const ext = t.mime.split('/')[1] || 'png';
     files.push({ name: `${t.name}.${ext}`, bytes: bin });
   });
-  const blob = makeZip(files);
-  downloadBlob(blob, safeFileName(P.cfgName, 'mousepad-config') + '.zip');
-}
-// 配置文件大小上限。base64 贴图内嵌时体积会膨胀约 1/3，32MB 足以容纳若干张大图，
-// 同时挡住"误选了视频/磁盘镜像"这类会让页面卡死或 OOM 的输入。
-const MAX_CONFIG_BYTES = 32 * 1024 * 1024;
-const CONFIG_VERSION = 1;
-
-// 清空一个贴图槽位并让预览区回到占位文案（P1-1：导入即完全对齐配置文件内容）
-function resetTexSlot(slot) {
-  clearTex(slot);
-  if (slot === 1) resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => {});
-  else resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => {});
+  downloadBlob(makeZip(files), safeFileName(P.cfgName, 'mousepad-config') + '.zip');
 }
 
 async function importConfigFile(file) {
   if (!file) return;
   if (file.size > MAX_CONFIG_BYTES) {
-    toast(`配置文件过大（${(file.size / 1048576).toFixed(1)}MB），上限 32MB`, 'err', 4000);
+    toast(T('cfg.tooBig', { mb: (file.size / 1048576).toFixed(1) }), 'err', 4000);
     return;
   }
   let cfg, zipFiles = null;
@@ -4067,24 +3521,27 @@ async function importConfigFile(file) {
     }
   } catch (err) {
     console.error('[导入配置]', err);
-    toast('配置导入失败：' + ((err && err.message) || err), 'err', 4000);
+    toast(T('cfg.failed', { msg: (err && err.message) || err }), 'err', 4000);
     return;
   }
   if (!cfg || cfg.type !== '3dm-config' || !cfg.params) {
-    toast('配置导入失败：文件格式不正确', 'err', 4000);
+    toast(T('cfg.badFormat'), 'err', 4000);
     return;
   }
   // 版本：当前只有 v1。未知（更新）版本仍尝试导入，但提示可能不兼容，
   // 而不是直接拒绝 —— 配置里没有真正的破坏性字段变更时，读旧值总比打不开好。
   if (cfg.version !== undefined && cfg.version !== CONFIG_VERSION) {
-    toast(`配置版本为 v${cfg.version}（当前支持 v${CONFIG_VERSION}），已尝试导入`, 'err', 4000);
+    toast(T('cfg.version', { v: cfg.version, cur: CONFIG_VERSION }), 'err', 4000);
   }
   // 缺陷 6：白名单 + 类型/范围校验，取代裸 Object.assign
   const { params, warnings } = sanitizeParams(cfg.params);
   Object.assign(P, params);
   if (warnings.length) {
     console.warn('[导入配置] 以下字段无效或未知，已回退默认值：', warnings);
-    toast(`配置已导入，但部分字段无效已回退默认：${warnings.slice(0, 3).join('、')}${warnings.length > 3 ? ' 等' : ''}`, 'err', 5000);
+    toast(T('cfg.importedWarn', {
+      keys: warnings.slice(0, 3).join('、'),
+      more: warnings.length > 3 ? T('cfg.more') : '',
+    }), 'err', 5000);
   }
   // P1-1：导入即完全对齐配置文件内容。清空必须发生在 ZIP 贴图的**异步回调之前**，
   // 否则"清空"会晚于回调，把刚导入的贴图删掉（竞态）。
@@ -4095,8 +3552,8 @@ async function importConfigFile(file) {
   let texTotal = 0, texDone = 0, texFailed = 0;
   const finishTex = () => {
     if (++texDone < texTotal) return;      // 还有条目未回调
-    if (texFailed) toast(`配置已导入，但有 ${texFailed} 张贴图加载失败`, 'err', 4000);
-    else if (!warnings.length) toast('配置已导入', 'ok');
+    if (texFailed) toast(T('cfg.importedTexFail', { n: texFailed }), 'err', 4000);
+    else if (!warnings.length) toast(T('cfg.imported'), 'ok');
   };
   if (zipFiles) {
     for (const [name, data] of zipFiles) {
@@ -4113,23 +3570,23 @@ async function importConfigFile(file) {
           // 预览取处理后的实际图源：超尺寸贴图会在弹窗里被裁 / 压成新图
           const src = dzPreviewSrc(t, dataURL);
           if (slot === 1) {
-            setDZPreview(document.getElementById('dz1'), src, () => resetDZ('dz1', '点击上传主贴图<br><small>或拖拽图片到画布</small>', () => { clearTex(1); rebuild(); }));
+            setDZPreview(document.getElementById('dz1'), src, () => resetDZ('dz1', T('tex.drop1'), () => { clearTex(1); rebuild(); }));
           } else {
-            setDZPreview(document.getElementById('dz2'), src, () => resetDZ('dz2', '点击上传腕托贴图（可选）<br><small>上传后将覆盖腕托区域</small>', () => { clearTex(2); refreshTextures(); rebuild(); }));
+            setDZPreview(document.getElementById('dz2'), src, () => resetDZ('dz2', T('tex.drop2'), () => { clearTex(2); refreshTextures(); rebuild(); }));
           }
         } finally {
           finishTex();   // 成功回调内部抛错也要收敛，否则永远等不到"配置已导入"
         }
       }, err => {
         // 用户在弹窗里放弃不算"坏文件"：只提示一句，不计入失败数
-        const slotName = slot === 1 ? '主贴图' : '腕托贴图';
+        const slotName = T(slot === 1 ? 'tex.main' : 'tex.wrist');
         if (err && err.cancelled) {
           console.warn('[导入配置] 已取消处理超尺寸贴图', name);
-          toast(`配置中的${slotName}未应用：已取消处理超尺寸图片`);
+          toast(T('cfg.texCancelled', { name: slotName }));
         } else {
           texFailed++;
           console.error('[导入配置] 贴图加载失败', name, err);
-          toast(`配置中的${slotName}加载失败（文件可能已损坏）`, 'err', 4000);
+          toast(T('cfg.texFailed', { name: slotName }), 'err', 4000);
         }
         finishTex();
       });
@@ -4160,16 +3617,16 @@ const panelScrim = document.getElementById('panelScrim');
 // 两个按钮语义相反、都由抽屉状态决定文案，故把「状态 → 无障碍属性」收在一处，
 // 免得日后加了第三种入口时漏掉其中一个的 aria-label。
 const panelBtns = [
-  [panelToggle, '打开参数面板', '收起参数面板'],
-  [panelHandle, '展开参数面板', '收起参数面板'],
+  [panelToggle, 'aria.openPanel', 'aria.closePanel'],
+  [panelHandle, 'aria.expandPanel', 'aria.closePanel'],
 ];
 
 function setPanelOpen(on) {
   document.body.classList.toggle('panel-open', on);
   // 让辅助技术感知抽屉状态（两个按钮都是 aria-expanded 的持有者）
-  for (const [btn, openLabel, closeLabel] of panelBtns) {
+  for (const [btn, openKey, closeKey] of panelBtns) {
     btn.setAttribute('aria-expanded', on ? 'true' : 'false');
-    btn.setAttribute('aria-label', on ? closeLabel : openLabel);
+    btn.setAttribute('aria-label', T(on ? closeKey : openKey));
   }
 }
 const panelOpen = () => document.body.classList.contains('panel-open');
@@ -4182,6 +3639,107 @@ panelHandle.addEventListener('click', togglePanel);
 panelScrim.addEventListener('click', () => setPanelOpen(false));
 // Esc 收起（外接键盘的平板 / 桌面窄窗口）
 window.addEventListener('keydown', e => { if (e.key === 'Escape' && panelOpen()) setPanelOpen(false); });
+function applyI18n() {
+  for (const el of document.querySelectorAll('[data-i18n],[data-i18n-html],[data-i18n-title],[data-i18n-aria],[data-i18n-placeholder]')) {
+    for (const [kind, fn] of Object.entries(I18N_ATTR)) {
+      const attr = 'i18n' + kind;
+      if (el.dataset[attr]) fn(el);
+    }
+  }
+  document.documentElement.lang = getLang() === 'zh' ? 'zh-CN' : 'en';
+  // 动态文案：下拉菜单的 option、滑条悬停说明等，创建时已登记
+  for (const n of i18nNodes) { if (n.el.isConnected && I18N_ATTR[n.kind]) I18N_ATTR[n.kind](n.el); }
+  setPanelOpen(panelOpen());          // 抽屉按钮的 aria-label 也要跟着换
+  if (dragMode !== 'view') setDragMode(dragMode, curveEdit);   // 模式提示条
+  if (curveEdit) modeHint.textContent = T('hint.curveMode');
+  refreshSlotUI();
+}
+
+/* ================= 本地保存：自动草稿 + 方案槽位 =================
+   此前纯前端没有持久化：调半小时参数、误关标签页就全没了。这里补两块：
+     · 自动草稿：参数变更防抖 600ms 后写 localStorage，刷新页面自动恢复；
+     · 方案槽位：命名保存 / 列出 / 载入 / 删除，参数与贴图存 IndexedDB。
+   ⚠️ 草稿恢复**只在启动时做一次**，且必须在首次 rebuild() 之前 ——
+      否则会先按默认参数建一次几何，再重建一遍，白白多花 10ms 且闪一下。
+   ⚠️ 贴图恢复走 makeTex 而不是直接 setTex：超尺寸图要能弹出裁剪 / 压缩界面，
+      与"用户手动上传"那条路径保持一致。 */
+const DRAFT_DEBOUNCE = 600;
+let draftTimer = 0;
+function scheduleDraft() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    try { store.saveDraft(store.snapshotParams(P)); }
+    catch (e) { /* 存不下就算了：少一个后悔药，不该打扰用户 */ }
+  }, DRAFT_DEBOUNCE);
+}
+
+const slotHost = document.getElementById('slotCtrls');
+const slotNameInput = document.getElementById('slotName');
+const slotList = document.getElementById('slotList');
+
+function refreshSlotUI() {
+  if (!slotList) return;
+  const slots = store.listSlots();
+  slotList.innerHTML = '';
+  if (!slots.length) {
+    const empty = document.createElement('div');
+    empty.className = 'hint'; empty.dataset.i18n = 'save.empty';
+    empty.textContent = T('save.empty');
+    slotList.appendChild(empty);
+    return;
+  }
+  for (const s of slots) {
+    const row = document.createElement('div'); row.className = 'slot-row';
+    const nm = document.createElement('span'); nm.className = 'slot-name'; nm.textContent = s.name;
+    if (!s.tex) nm.title = T('save.noTex');
+    const ld = document.createElement('button'); ld.textContent = T('save.loadBtn');
+    ld.onclick = () => loadSlotById(s.id);
+    const del = document.createElement('button'); del.textContent = T('save.delBtn');
+    del.onclick = () => {
+      if (!confirm(T('save.confirmDel', { name: s.name }))) return;
+      store.deleteSlot(s.id).then(refreshSlotUI)
+        .catch(e => toast(T('save.loadFailed', { msg: e.message }), 'err'));
+    };
+    row.append(nm, ld, del);
+    slotList.appendChild(row);
+  }
+}
+
+async function loadSlotById(id) {
+  try {
+    const rec = await store.loadSlot(id);
+    const { params } = sanitizeParams(rec.params);
+    Object.assign(P, params);
+    resetTexSlot(1); resetTexSlot(2);
+    const importOk = rebuild();
+    if (curveEdit && importOk) fitEditOrtho();
+    refreshShapeUI();
+    if (window.refreshWristUI) window.refreshWristUI();
+    uiSyncers.forEach(f => f());
+    syncTexUI('t1'); syncTexUI('t2');
+    refreshTextures();
+    const meta = store.listSlots().find(x => x.id === id);
+    if (rec.tex) {
+      makeTex(rec.tex, t => {
+        setTex(1, t); refreshTextures(); rebuild();
+        setDZPreview(document.getElementById('dz1'), dzPreviewSrc(t, rec.tex),
+          () => resetDZ('dz1', T('tex.drop1'), () => { clearTex(1); rebuild(); }));
+      }, err => texLoadFailed(1, err));
+    }
+    toast(T('save.restoredSlot', { name: (meta && meta.name) || id }), 'ok');
+  } catch (e) {
+    toast(T('save.loadFailed', { msg: e.message }), 'err', 4000);
+  }
+}
+
+function saveCurrentSlot() {
+  const name = (slotNameInput.value || '').trim() || new Date().toLocaleString();
+  const tex = tex1 && tex1.image && String(tex1.image.src || '').startsWith('data:') ? tex1.image.src : null;
+  store.saveSlot(name, store.snapshotParams(P), tex)
+    .then(r => { refreshSlotUI(); toast(T('save.saved', { name: r.meta.name }), 'ok'); })
+    .catch(e => toast(T('save.saveFailed', { msg: e.message }), 'err', 4000));
+}
+
 /* ================= 主循环 ================= */
 function resize() {
   const w = stage.clientWidth, h = stage.clientHeight;
@@ -4214,10 +3772,58 @@ if (typeof ResizeObserver !== 'undefined') new ResizeObserver(resize).observe(st
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 60));
 
+/* ---------- 启动 ---------- */
+// dev 自检：漏登记 schema / onChange 的参数在导入与变更分发时都会静默降级，故启动时点名
+{
+  const missing = missingSchemaKeys();
+  if (missing.length) console.warn(T('cfg.warnLog'), missing);
+}
+
+// 语言按钮：只切文案，不动参数与几何
+{
+  // ⚠️ 按钮自身的文案**不要**手动写：它带 data-i18n="lang.switch"，
+  //    applyI18n() 会按当前语言取 —— 而 lang.switch 在每种语言里写的都是"另一种语言的名字"
+  //    （中文界面显示 English，英文界面显示 中文），手动赋值反而会与这次刷新抢先后。
+  const lb = document.getElementById('langBtn');
+  lb.onclick = () => {
+    setLang(otherLang(), window.localStorage);
+    applyI18n();
+  };
+}
+// 方案槽位的「保存」按钮
+document.getElementById('slotSave').onclick = saveCurrentSlot;
+
+// 自动草稿：参数变更防抖后落盘。挂在 applyParam 与各直接写入口之后统一触发，
+// 而不是在每个控件回调里各写一遍（那样新增控件必然漏一处）。
+const draftHooked = new Set();
+function hookDraft(fn, name) { if (!draftHooked.has(name)) { draftHooked.add(name); } return fn; }
+
+applyI18n();
+
+// 恢复上次草稿（必须在首次 rebuild 之前，否则会先按默认参数建一次几何再重建）
+{
+  // ⚠️ 草稿是**扁平的参数快照**（snapshotParams 直接返回 P 的副本），不是 { params } 包装。
+  //    仍要过一遍 sanitizeParams：草稿可能是旧版写的，直接 Object.assign 会把陌生字段带进来。
+  const draft = store.loadDraft();
+  if (draft) {
+    const { params } = sanitizeParams(draft);
+    Object.assign(P, params);
+    restoredDraft = true;
+    // ⚠️ 控件在 UI 构建阶段就按当时的 P 取过一次值，恢复草稿发生在那之后 ——
+    //    不跑一遍同步链的话，滑条仍显示默认值，而画面已经变了（读数与画面对不上）。
+    uiSyncers.forEach(f => f());
+    syncTexUI('t1'); syncTexUI('t2');
+  }
+}
+
 rebuild();
 updateLights();
 updateBackground();
 resize();
+refreshSlotUI();
+// ⚠️ 延后一拍再弹：恢复提示若在页面刚就绪时弹出，等冒烟脚本 3.6s 后才去读，
+// toast 早已自行消失（默认 2.6s），断言会假失败。这里给足 5s 展示时间。
+if (restoredDraft) setTimeout(() => toast(T('save.restored'), 'ok', 5000), 300);
 // 默认：经典模式，编辑轮廓默认不勾选（用户按需开启）
 
 (function loop() {
@@ -4256,10 +3862,11 @@ resize();
 <div id="texFix" role="dialog" aria-modal="true" aria-labelledby="tfTitle">
   <div class="tf-box">
     <div class="tf-head">
-      <h2 id="tfTitle">调整贴图尺寸</h2>
-      <p>这张图片为 <span class="tf-dim" id="tfDim">—</span>，可用边长上限为
-        <span class="tf-dim" id="tfMax">—</span>。<br>
-        <b>裁剪框</b>决定保留多大，<b>长边裁剪</b>只把图压小；仍超过上限时自动等比压缩到上限以内。</p>
+      <h2 id="tfTitle" data-i18n="tf.title">调整贴图尺寸</h2>
+      <p id="tfDesc"><span data-i18n="tf.descPre">这张图片为</span>
+        <span class="tf-dim" id="tfDim">—</span><span data-i18n="tf.descMid">，可用边长上限为</span>
+        <span class="tf-dim" id="tfMax">—</span><span data-i18n="tf.descPost">。</span><br>
+        <span data-i18n-html="tf.descTip"><b>裁剪框</b>决定保留多大，<b>长边裁剪</b>只把图压小；仍超过上限时自动等比压缩到上限以内。</span></p>
     </div>
     <div class="tf-body">
       <div class="tf-stage" id="tfStage">
@@ -4270,9 +3877,9 @@ resize();
       </div>
       <div class="tf-cts">
         <div class="row">
-          <label>裁剪比例</label>
+          <label data-i18n="tf.aspect">裁剪比例</label>
           <select id="tfAspect">
-            <option value="free">自由</option>
+            <option value="free" data-i18n="tf.aspectFree">自由</option>
             <option value="1">1 : 1</option>
             <option value="1.3333333">4 : 3</option>
             <option value="1.5">3 : 2</option>
@@ -4280,23 +3887,23 @@ resize();
             <option value="0.75">3 : 4</option>
             <option value="0.6666667">2 : 3</option>
           </select>
-          <button class="btn ghost" id="tfFull" type="button" style="flex:0 0 84px;margin:0;padding:6px 0;">全选</button>
+          <button class="btn ghost" id="tfFull" type="button" data-i18n="tf.selectAll" style="flex:0 0 84px;margin:0;padding:6px 0;">全选</button>
         </div>
         <div class="row">
-          <label>长边裁剪</label>
+          <label data-i18n="tf.longEdge">长边裁剪</label>
           <input type="range" id="tfSize" min="16" max="4096" step="1" value="4096">
           <span class="val" id="tfSizeVal">4096</span>
-          <button class="btn ghost" id="tfOrig" type="button" style="flex:0 0 66px;margin:0;padding:6px 0;">1 : 1</button>
+          <button class="btn ghost" id="tfOrig" type="button" data-i18n="tf.orig" style="flex:0 0 66px;margin:0;padding:6px 0;">1 : 1</button>
         </div>
         <div class="row">
-          <label>输出格式</label>
+          <label data-i18n="tf.format">输出格式</label>
           <select id="tfFormat">
-            <option value="image/png">PNG（无损，保留透明）</option>
-            <option value="image/jpeg">JPEG（体积更小）</option>
+            <option value="image/png" data-i18n="tf.formatPng">PNG（无损，保留透明）</option>
+            <option value="image/jpeg" data-i18n="tf.formatJpeg">JPEG（体积更小）</option>
           </select>
         </div>
         <div class="row" id="tfQualityRow">
-          <label>JPEG 质量</label>
+          <label data-i18n="tf.quality">JPEG 质量</label>
           <input type="range" id="tfQuality" min="40" max="100" step="5" value="90">
           <span class="val" id="tfQualityVal">90</span>
         </div>
@@ -4304,8 +3911,8 @@ resize();
       <div class="tf-out" id="tfOut">—</div>
     </div>
     <div class="tf-foot">
-      <button class="btn ghost" id="tfCancel" type="button">取消上传</button>
-      <button class="btn" id="tfApply" type="button">应用并上传</button>
+      <button class="btn ghost" id="tfCancel" type="button" data-i18n="tf.cancel">取消上传</button>
+      <button class="btn" id="tfApply" type="button" data-i18n="tf.apply">应用并上传</button>
     </div>
   </div>
 </div>
