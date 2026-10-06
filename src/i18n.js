@@ -77,6 +77,7 @@ const DICT = {
     // —— 背景与导出 ——
     'ctl.transparent': '透明背景', 'ctl.bg': '背景颜色',
     'ctl.exportTransparent': '导出时透明背景', 'ctl.exportScale': '导出倍率',
+    'ctl.exportHeader': '导出图署名条', 'ctl.exportHeaderTransparent': '署名条留空底',
     'ctl.cfgName': '配置名称', 'ctl.cfgNamePh': '留空则用默认文件名',
     'btn.exportPreview': '导出预览图', 'btn.exportModelPNG': '导出模型渲染图',
     'btn.exportGLB': '导出模型 (GLB，含贴图)', 'btn.exportSTL': '导出模型 (STL，打印)',
@@ -244,6 +245,7 @@ const DICT = {
 
     'ctl.transparent': 'Transparent bg', 'ctl.bg': 'Background',
     'ctl.exportTransparent': 'Transparent bg on export', 'ctl.exportScale': 'Export scale',
+    'ctl.exportHeader': 'Export header bar', 'ctl.exportHeaderTransparent': 'Header keeps no fill',
     'ctl.cfgName': 'Config name', 'ctl.cfgNamePh': 'blank = default file name',
     'btn.exportPreview': 'Export preview image', 'btn.exportModelPNG': 'Export model render',
     'btn.exportGLB': 'Export GLB (with texture)', 'btn.exportSTL': 'Export STL (for printing)',

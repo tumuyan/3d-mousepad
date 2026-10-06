@@ -20,6 +20,7 @@
 | ZIP 打包 / 解包 | `makeZip()` / `parseZip()` | 纯前端 `CompressionStream` 实现，零依赖。**只支持 store（method 0）**，其余压缩方式一律抛错 |
 | 导出模型 | `exportModel3D('glb'\|'stl'\|'obj')` | 见 §4 导出 |
 | 模型渲染图 | `exportModelPNG()` | 见 §4 导出 |
+| 署名条 | `#exportHeader` / `exportHeader.js` | 导出图顶部那条「软件名 + 页面二维码」，见 §4 |
 | 渲染脏标记 | `markRenderDirty()` / `markShadowDirty()` | 主循环按需渲染，见 §5。前者管画面，后者管阴影贴图 |
 | 参数变更分发 | `applyParam(key, v)` / `applyParamThen(key, v, extra)` | 按 `PARAM_SCHEMA[key].onChange` 决定重建 / 刷材质 / 只置脏，见 §2.5 |
 | 文案 | `T(key, vars)` / `applyI18n()` / `regI18n(el, kind, key)` | 见 §2.5。缺词时 `T()` 返回 key 本身 |
@@ -69,6 +70,7 @@
 | `src/footprint.js` | 腕托足迹采样 / 等距外扩 / 去自交 | ❌ |
 | `src/store.js` | localStorage + IndexedDB 持久化 | ✅（只用 Web API） |
 | `src/i18n.js` | 中英词典与语言切换 | ❌ |
+| `src/exportHeader.js` | 署名条版式 / 二维码内容 / 二维码按需加载 | ❌ |
 
 > ⚠️ 标 ❌ 的模块**不得 import three**：它们要能在 `npm run unit` 里被 node 直接 import。
 > 一引入 three 就只能走浏览器 + CDN，反馈环从毫秒级退化到分钟级 —— 拆模块的主要收益即此。
@@ -204,6 +206,53 @@
 - ⚠️ 不要用世界 AABB 的 `size.x/size.y` 反推取景：鼠标垫躺在 XZ 平面，`size.y` 只是厚度，`size.x/size.z` 也不对应屏幕横竖方向
 - 输出分辨率 = 投影矩形的屏幕像素 × `P.exportScale`，长边上限 8192（浏览器画布上限）
 
+**导出图署名条（软件名 + 页面二维码）**
+`P.exportHeader` 默认开启。两张 PNG 的顶部都会多出一条深底横幅：左边是软件名
+（`3D MousePad` 白 + `Studio` 品牌粉，与 `#panel` 的 `<h1>` 同色），右边是当前页面地址的二维码。
+
+- **署名条是真实 DOM**（`#exportHeader`，常驻在 `#stage` 上、常态 `display:none`），
+  由 `html-to-image` 单独截成位图后贴到导出图顶部。**不插进 3D 场景**：场景里的内容
+  会跟着相机投影走，换个视角署名条就变形。
+- ⚠️ **尺寸基准是 `--hdr-w`，必须等于本次出图宽度**（不是 CSS 视口宽）。
+  条内所有长度都写成 `calc(k * var(--hdr-w))`，写成视口宽会让横幅整体缩小 ——
+  而白底、二维码这些自带尺寸的部分看着仍然对，线索只剩「左边一大块空」。
+- ⚠️ 所有 `calc()` 必须能化简成「一个数字 × `var(--hdr-w)`」。写成
+  `calc(0.055 * var(--hdr-w) + 0.023 * var(--hdr-w))` 时，字面的**第二项**会被
+  字面量解析成无单位数字（百分比与 `var()` 都不参与），整条式子作废。故
+  `headerLayout()` 里就把系数合并好，不留给 CSS 相加。
+- ⚠️ 条高按**图宽**折算（`HEADER_W_RATIO = 0.095`），**不按物理毫米**。
+  画面里的垫子是相机投影，跟毫米没有固定关系：按毫米定高时署名条会在一部分视角下
+  比画面主体还高（实测 5.4mm 折算 25px，而画面里垫子只占 18px）。
+- 二维码位图按**本次出图的实际像素**生成（`qs × outW`），不在固定"设计栅格"上
+  算一次复用 —— QR 是硬边像素图，3x 导出时被放大就采样不到模块了。
+- ⚠️ 二维码位图的 `margin` 必须是 **0**，静区只由白底卡承担。写成 `QUIET_ZONE`
+  会把静区**算两遍**：库的 `margin` 是"在指定 width 里内缩"，于是 55px 的画布里
+  QR 本体只剩 55×29/37 ≈ 44px，外面再套一层卡的静区就成了"一边 2 模块、一边 4 模块"
+  的畸形留白，模块边长被压小近 1/4，噪点一多就扫不出来。
+- ⚠️ 白底卡是**纯白实心**，不许铺棋盘格。白色既是"卡底"也是**静区**：静区是按像素
+  判定的反色留白，混进灰格子就是在定位图案旁边撒噪声。要"不显得突兀"只能靠尺寸位置。
+- ⚠️ 卡的尺寸**不能只按高度定**：静区宽度反比于模块数（21 模块时卡 = 本体 + 8 个静区
+  模块 ≈ 条高的 0.86），定高的话短地址下卡会顶穿条底、正好坐在分隔线上，观感就是
+  "画面被标题压住"。`headerLayout` 里改成"高度受 `cardMax` 约束 + 宽度受右侧留白约束，
+  取小值再反算模块边长"，方块属性与"上下都有留白"同时成立，任何模块数都不越界。
+- 条底另有一条 `gap` 留白带（用 `border-bottom` 的透明部分表达），署名条与画面之间
+  有确定呼吸，与二维码模块数无关。
+- ⚠️ **1x 导出图里的二维码读不出来**（署名条约 69px 高，29 模块每模块不到 1px）。
+  这是"按图宽定高"的必然结果，2x/3x 可扫。要 1x 也可扫得把条高翻倍，
+  为缩略图牺牲画面尺寸不划算 —— 详见 `HEADER_W_RATIO` 的注释，别去动那条比例。
+- 二维码内容 = `location.href` 去锚点。⚠️ 二维码库 / `html-to-image` 任一拉不到
+  （离线）时**只跳过那部分**：二维码藏起来、署名条照出，绝不因为一次 CDN 失败
+  把整张导出搞砸。
+- ⚠️ **叠署名条的时机：裁剪之前**。`exportModelPNG` 曾把顺序写成"先 `cropTransparentPNG`
+  贴合裁剪 → 再 `withHeader`"，裁完的图比"整幅画布宽"的横幅窄，多出来的一圈就是
+  用户看到的**透明边**。同时 `cropTransparentPNG` 要接收署名条高度（`topInset`），
+  左右边界只在署名条以下统计 —— 横幅铺满画布，把它算进去裁出来的还是画布宽。
+- `P.exportHeaderTransparent`（只在「导出时透明背景」打开时可勾）让署名条也留空底，
+  此时底部那条品牌色分隔线改成透明。⚠️ 只改**颜色**、不改宽度：宽度是版式的一部分，
+  归零会把条底留白一起吃掉。⚠️ `exportPNG` 里判断恢复用的是
+  `P.transparent !== prevTransparent` 而**不是** `P.exportTransparent !== prevTransparent`：
+  后者在"导出透明 + 署名条留空底"同时开启时会把透明背景留在预览上。
+
 **3D 模型 `exportModel3D(kind)`**
 - `loadExporter(kind)`：按需动态 `import()`（走 importmap 的 `three/addons/` 前缀）并缓存，specifier 必须写**字面量**
 - `buildExportRoot({ bakeUV, unit })`：只含 `padMesh` + 可见 `wristGroup`，几何 `clone()` 后烘焙世界矩阵（输出节点无变换）；材质去重，命名 `PadTop`/`PadEdge`/`WristRest`，节点 `Pad`/`WristRest_n`
@@ -312,6 +361,14 @@
 - ⚠️ 兜底用例**不能只断言"参数回到原值"**：`clampGeoParams()` 单独就能让这类断言变绿，捕获取消了也发现不了。必须同时断言"几何被换回重建前的版本"（越界值真的改变了顶点数，才区分得出"回到了好状态"与"停在坏状态"）
 - ⚠️ 冒烟里造"越界参数"要覆写 `input.value` 的 **getter**（返回常量），覆写 setter 无效（浏览器仍按 min/max 夹紧 getter），且用完必须 `delete` 复原，否则后续读取永远拿到常量
 - 导出函数（`exportPNG` / `exportModelPNG` / `exportModel3D`）改动渲染器状态时，新代码**必须放进 `try` 块**并由 `finally` 恢复：写在 try 之前的异常不会触发 finally，会让预览永久走形
+- **署名条（`#exportHeader`）常驻在 `#stage` 上**，恢复时必须还原成 `display:none` 而不是"调用前的值" ——
+  它初始就是隐藏态，按"恢复成调用前"写的代码会在第一次导出后把它永久留在画布上
+- 给导出图叠任何东西，都要么在裁透明边**之前**（成品的几何标定就含它），
+  要么在**之后**（成品的几何只算模型）。`exportModelPNG` 走的是"先裁后叠"：
+  贴合裁剪按模型的 alpha 算，先叠横幅会把那一条也算进内容区，裁出来的图多一圈横向留白
+- 代码里**不要新增与已有函数同名**的辅助函数（如导出路径里再写一个 `loadImage`）——
+  整个 `<script type="module">` 是一个模块，重名会让它整体解析失败、页面白屏，
+  而报错只说"Identifier already declared"，不指位置
 - 足迹变换**先缩放后旋转**，不可颠倒（3D 局部矩阵是 `T·R·S`）；垫身总长与腕托位置只能取**未旋转**基准 `buildFootprint(_, true)`，否则旋转会带着垫身拉长、腕托平移
 - 导入配置的完整同步链：解析 + `cfg.type` 校验 → `sanitizeParams()` 校验 → `resetTexSlot(1/2)` 清空贴图 → `rebuild()` + `refreshShapeUI()` + `refreshWristUI()` + `uiSyncers.forEach()` + `syncTexUI('t1'/'t2')` + `refreshTextures()`
   - ⚠️ `rebuild()` 失败（配置是外部输入，可能注入坏参数）时不要调 `fitEditOrtho()`：按半成品几何算包围盒会把编辑视口缩放到荒谬尺度
@@ -373,12 +430,13 @@ index.html   页面骨架 + 渲染 / 交互 / 导出（Three.js 经 importmap �
 src/         拆出的模块（原生 ES module，零构建），见 §2.5
 test/        回归验证，分两层：
   unit/      纯函数级（node:test，约 1 秒）：params / config / textureMath /
-             anchors / footprint / i18n；`npm run unit`
+             anchors / footprint / i18n / exportHeader；`npm run unit`
   smoke-*.mjs 浏览器冒烟（Playwright + SwiftShader）：smoke-render 渲染交互、
              smoke-export 导出资源、smoke-mobile 移动端布局与触控、
              smoke-texfix 超尺寸贴图处理、smoke-zoomwheel 滚轮方向、
              smoke-i18n-store 国际化与本地保存；`npm run smoke`
   _harness.mjs 公共装置（静态服务 + 浏览器启动 + 断言收集）
+  _png.mjs     最小 PNG 读取器（署名条的像素级断言用它，只依赖 node:zlib）
 demo/        独立 demo 页，与主工程无代码耦合，仅供方案评估，浏览器直接打开即可
   curvetest.html  曲线算法对比（Catmull-Rom 锚点 vs 真贝塞尔手柄）
   sidetest.html   侧边（边缘）方案对比：五种侧壁生成方案 + 纯色/贴图两种观感，不接腕托

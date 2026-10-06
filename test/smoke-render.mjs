@@ -396,8 +396,24 @@ try {
   ok('导出预览图：画布尺寸已复原',
     JSON.stringify(beforeSize) === JSON.stringify(afterSize),
     `${JSON.stringify(beforeSize)} -> ${JSON.stringify(afterSize)}`);
+  // 截图会包含署名条预览：导出前它被 prepareHeader 显式 display:none 藏起来，
+  // 导出后（finally 里）恢复成隐藏态，故画面必须逐字节一致 —— 这条同时兜住
+  // "署名条忘了收起来，一直挂在画布上"这类漏恢复。
   ok('导出预览图：画面与导出前一致', Buffer.compare(preExp, postExp) === 0,
     `${preExp.length}B vs ${postExp.length}B`);
+  // 署名条常驻在 #stage 上，只在导出的那一瞬间显形，出图必须收回隐藏态
+  ok('导出预览图：署名条预览已收起（不在画布上常驻）', await page.evaluate(() => {
+    const b = document.getElementById('exportHeader');
+    return !b || getComputedStyle(b).display === 'none';
+  }));
+  // 署名条的尺寸基准是 --hdr-w（= 本次出图宽度），不是 CSS 视口宽
+  ok('署名条：--hdr-w 已同步到出图宽度', await page.evaluate(() => {
+    const b = document.getElementById('exportHeader');
+    if (!b) return false;
+    const v = b.style.getPropertyValue('--hdr-w').trim();
+    // 导出倍率默认 2，出图宽 = #stage CSS 宽 × 2
+    return parseFloat(v) > document.getElementById('stage').clientWidth;
+  }), await page.evaluate(() => document.getElementById('exportHeader').style.getPropertyValue('--hdr-w')));
 
   /* ---------- 几何入口异常兜底 ---------- */
   // 历史：rebuild() 下面挂着 makeClassicShape / buildPad / buildWrist，三者都没有 try。

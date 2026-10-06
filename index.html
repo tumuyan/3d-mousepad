@@ -302,6 +302,11 @@
   /* 双击视角按钮时不要放大整页（user-scalable=no 在部分安卓浏览器上仍会"双击缩放"） */
   #toolbar, #panelToggle, #panel { touch-action:manipulation; }
   #view { width:100%; height:100%; display:block; }
+  /* 静态渐变（不是 repeating-linear-gradient）：
+     html-to-image 的 SVG foreignObject 只吃 computedStyle 里能写成 CSS 文本的值，
+     `repeating-linear-gradient(45deg,...)` 恰好落在这个子集外，署名条的二维码白底卡
+     会渲染成一片纯色方块。两条 45° 渐变拼出同样的棋盘格，且能安全序列化。
+     ⚠️ 白底卡（见「导出图署名条」一节）依赖这条底色，改这里要一起看。 */
   #stage.checker {
     background:#202228;
     background-image:
@@ -309,6 +314,15 @@
       linear-gradient(45deg,#2a2c33 25%,transparent 25%,transparent 75%,#2a2c33 75%);
     background-size:24px 24px; background-position:0 0,12px 12px;
   }
+  /* 署名条上的二维码白底卡。宽高 / 位置全部由 JS 按 headerLayout() 定。
+     ⚠️ 卡是**纯白实心**，一格棋盘都不许有。白色既是"白底"也是**静区**：
+        ISO/IEC 18004 要求二维码四周 ≥ 4 个模块的反色留白，那圈留白必须干净。
+        早先在这里铺棋盘格（想让它"别像一块白砖"）是错的 —— 灰格子被算进静区，
+        定位图案旁边出现 4 个模块宽的杂色，扫不扫得出来全看扫码器心情。
+        要"不显得突兀"只能靠尺寸/位置，不能靠往静区里画东西。
+     ⚠️ 必须放全局样式表：html-to-image 只克隆节点子树，定义在 js 里的内联
+        background-image 会在序列化时被丢掉。 */
+  #ehQrCard { background-color:#fff; }
   /* 工具栏：一个绝对定位的 flex 容器，内部左侧=导出/配置组，右侧=交互模式与视角组。
      旧实现是 #topbar（left:16px）与 #toolbar（right:16px）两个各自绝对定位的兄弟节点，
      各自从两端向中间排；视口窄到两组加起来放不下时二者直接重叠、按钮压按钮。
@@ -660,7 +674,9 @@
 {
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "qrcode": "https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm",
+    "html-to-image": "https://cdn.jsdelivr.net/npm/html-to-image@1.11.13/+esm"
   }
 }
 </script>
@@ -815,6 +831,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
      src/footprint.js   腕托足迹采样与外扩             ← 纯几何
      src/store.js       localStorage + IndexedDB 持久化
      src/i18n.js        界面文案词典与语言切换
+     src/exportHeader.js 导出图署名条（软件名 + 页面二维码）版式与合成  ← 纯逻辑
    把纯函数拆出来的直接收益：它们能在 node:test 里直接 import，
    不必每次开浏览器 + 等 3.5s CDN（见 test/unit/*.test.mjs）。 */
 import { norm2, numOrNull, clampNum, getPath, setPath } from './src/util.js';
@@ -835,6 +852,7 @@ import { bakeClassicCtrl, autoSmoothClassicCtrl, ensureClassicCtrl } from './src
 import { buildFootprint, removeOffsetLoops } from './src/footprint.js';
 import * as store from './src/store.js';
 import { t as _t, setLang, getLang, otherLang, initLang, onLangChange, langSwitchLabel } from './src/i18n.js';
+import { headerLayout, loadQr, qrURL, __setQrModule } from './src/exportHeader.js';
 
 // 文案入口。写 `T('key')` 而非直接 import t()，是为了让下面这段"界面文案"与
 // "调试日志"的界限清楚：T 只出现在用户可见处，console 里的中文不走它。
@@ -952,6 +970,198 @@ const shadowPlane = new THREE.Mesh(
 shadowPlane.rotation.x = -Math.PI / 2;
 shadowPlane.receiveShadow = true;
 scene.add(shadowPlane);
+
+/* ---------- 导出图署名条（软件名 + 页面二维码） ----------
+   ⚠️ 文案不能在这里定死：`T()` 取的是**当前语言**，切语言后导出要跟着变，
+      故每次导出前都重新取一遍（见 prepareHeader）。 */
+// ⚠️ 不能一次性算死：二维码白底卡的大小要跟着**本次二维码的模块数**走
+//    （模块数 = 内容长度 + 纠错等级的函数，地址长短一变就变）。
+//    每次导出前由 buildHeaderDom() 重算，并顺带把 DOM 尺寸刷一遍。
+let HEADER_LAYOUT = headerLayout();
+
+/* 署名条是**一段 DOM**，用 `html-to-image` 直接叠在导出画面上。
+   这是唯一能让署名条样式与页面样式同源的做法：颜色、字体、圆角全部走
+   `:root` 的设计 token，改主题时导出图跟着一起变，不必在 canvas 里再抄一份。
+
+   三个关键点：
+   1. 高度必须是**图宽的百分比**（`--hdr-w` 注入像素、内部一律 `calc(k * var(--hdr-w))`），
+      不是在 canvas 里按 px 算 —— 否则 1x/2x/3x 导出出来的署名条观感完全不同。
+   2. 所有 `calc()` 都必须能化简成「一个数字 × var(--hdr-w)」：
+      `calc(0.055 * var(--hdr-w) + 0.023 * var(--hdr-w))` 里字面的第二项会被
+      字面量解析成**无单位数字**（百分比和 var 都不参与），整条式子直接作废（实测）。
+   3. 内容先填好再截图。图片的 HTTP 加载是异步的，`await` 完 src 再量尺寸即可。
+   4. `--hdr-w` 必须等于**最终出图宽度**（不是 CSS 视口宽）。写成后者时横幅会整体
+      缩小，而白底 / 二维码自带尺寸看着仍然对，只剩"左边一大块空"这个线索。 */
+const HDR_K = 1000;                                   // 设计栅格：一个"整"基准，避免 0.0xxx 系数
+const HDR_PX = px => `calc(${(px / HDR_K).toFixed(6)} * var(--hdr-w))`;
+
+/* 署名条的节点树。
+   ⚠️ 二维码只负责「本体」，静区 + 白底由**外层的 #ehQrCard** 承担。
+      拆成两层是为了同时满足两件事：
+      · 静区（quiet zone）是 ISO/IEC 18004 强制要求：二维码最外圈的黑模块若直接
+        贴在深色横幅上，定位图案找不到边界，整码扫不出来 —— 这就是「黑点和黑色
+        背景完全融合、扫不出来」的成因。故卡内四周必须留白。
+      · 卡片必须是**定高的正方形**（二维码本来就是方的），宽高同值 + 竖直居中，
+        绝不能靠四边内边距撑 —— 那会把卡片拉长成矩形，观感上是一条白条。 */
+const HEADER_LAYOUT_DOM = (() => {
+  const box = document.createElement('div');
+  box.id = 'exportHeader';
+  box.dataset.i18nAria = 'ctl.exportHeader';
+  box.setAttribute('aria-label', T('ctl.exportHeader'));
+  // ⚠️ 宽高都写死（不靠 left/right 撑）：截图时它被临时挂到 <body> 上，
+  //    在那种定位上下文里 `left:0;right:0` 量出来是 0 宽，署名条会截成空图
+  box.style.cssText = [
+    'position:absolute', 'left:0', 'top:0',
+    `width:${HDR_PX(HDR_K)}`,
+    'background:var(--bg-app)', 'overflow:hidden', 'background-clip:padding-box',
+    // 常态是隐藏 —— 署名条**常驻**在 #stage 上，只在导出的那一瞬间显形
+    'display:none', 'align-items:center',
+    'box-sizing:border-box',
+  ].join(';');
+  // 软件名两段：白字 + 品牌色，与 #panel 的 <h1> 同源。
+  // 用 <span> 而不是 canvas：字体、字重、字距全部由 CSS 决定，与页面一致。
+  const tA = document.createElement('span');
+  tA.dataset.i18n = 'app.titleA'; tA.textContent = T('app.titleA');
+  const tB = document.createElement('span');
+  tB.dataset.i18n = 'app.titleB'; tB.textContent = T('app.titleB');
+  const title = document.createElement('span');
+  title.id = 'ehTitle';
+  title.style.cssText =
+    'display:flex;align-items:baseline;gap:0.06em;white-space:nowrap;overflow:hidden;' +
+    'color:#fff;letter-spacing:.02em';
+  tB.style.color = 'var(--accent)';
+  title.append(tA, tB);
+
+  // 二维码白底卡：白底 + 静区都在这里。底色 / 棋盘格图案写在**全局样式表**的
+  // #ehQrCard 规则里（html-to-image 只克隆节点子树，内联的 background-image 会被丢掉）。
+  const card = document.createElement('div');
+  card.id = 'ehQrCard';
+  card.style.cssText = 'display:none;flex:0 0 auto;box-sizing:border-box;align-items:center;justify-content:center';
+  const qr = document.createElement('img');
+  qr.id = 'ehQr';
+  qr.alt = '';
+  qr.decoding = 'sync';
+  qr.style.cssText = 'display:block;image-rendering:pixelated';
+  card.append(qr);
+  // 文字用 flex:1 吃掉剩余宽度，白底卡靠右固定 —— 无需任何绝对定位与手算偏移
+  title.style.flex = '1 1 auto';
+  box.append(title, card);
+  return { box, title, tA, tB, card, qr };
+})();
+
+/* 把 headerLayout() 的系数刷到 DOM 上。
+   ⚠️ 每次导出前都要调一次，不能只在初始化时调：
+      · 白底卡的大小取决于本次二维码的模块数（随地址长度与纠错等级变），
+        不是常量，写死一次会让卡与码对不上；
+      · 文案 / 底色 / 图标高度都是 `calc(k * var(--hdr-w))`，必须在 --hdr-w
+        已经设成本次出图宽度之后再刷新，否则量到的还是上一轮的尺寸。
+   `qrModules` = 本次二维码的总模块数（不含静区）；拿不到时传 0，走无码退化版式。 */
+function buildHeaderDom(qrModules) {
+  HEADER_LAYOUT = headerLayout(qrModules);
+  const L = HEADER_LAYOUT, { box, title, card, qr } = HEADER_LAYOUT_DOM;
+  box.style.height = HDR_PX(L.H * HDR_K);
+  box.style.paddingLeft = HDR_PX(L.xs * HDR_K);
+  box.style.paddingRight = HDR_PX((1 - L.qx) * HDR_K);
+  title.style.font = `600 ${HDR_PX(L.fs * HDR_K)}/1 "Segoe UI","Microsoft YaHei",system-ui,sans-serif`;
+  // 卡片：二维码本体 + 四周静区，正方形且竖直居中。
+  // ⚠️ 卡的尺寸由 headerLayout 算好（它同时受纵向留白与横向空间的约束），
+  //    这里只负责刷上去，不要在这里再算一次 —— 两处各算一份必然改一处忘一处。
+  card.style.width = HDR_PX(L.card * HDR_K);
+  card.style.height = HDR_PX(L.card * HDR_K);
+  qr.style.width = HDR_PX(L.qs * HDR_K);
+  qr.style.height = HDR_PX(L.qs * HDR_K);
+  // 条底留白（gap）与分隔线都拿 border-bottom 表达：
+  // 浏览器会把 border 画在 box 的**内边缘**，而这里的 box 是 border-box —— 于是
+  // 条高 H 不变、内在的 flex 居中区却矮了 gap + rule，卡片自然得到"下方留白"。
+  // ⚠️ 分隔线必须是「透明 border + background-clip: padding-box」而不是直接着色：
+  //    直接给 border 上色的话，"署名条留空底"时只能把 border 宽度改成 0，
+  //    那 gap 就跟着一起没了 —— 留白是版式，不该跟着配色开关跑。
+  box.style.borderBottom = `${HDR_PX(L.rule * HDR_K)} solid var(--accent)`;
+  box.style.backgroundClip = 'padding-box';
+}
+
+// 署名条的 DOM 版本要不要留底色（「导出时透明背景」打开时才可能为真）
+function syncHeaderSkin() {
+  const clear = P.exportTransparent && P.exportHeaderTransparent;
+  const { box } = HEADER_LAYOUT_DOM;
+  const L = HEADER_LAYOUT;
+  box.style.background = clear ? 'transparent' : 'var(--bg-app)';
+  // ⚠️ 底色不画了，底边那条品牌色分隔线也要一起撤成透明 —— 留着的话它就是一根
+  //    凭空浮在导出图上的粉线（它本来只是图案的收边，不是内容）。
+  // ⚠️ 只改颜色、**不改宽度**：宽度是版式的一部分（见 buildHeaderDom），
+  //    归零会把条底留白一起吃掉。
+  box.style.borderBottomColor = clear ? 'transparent' : 'var(--accent)';
+}
+
+/* 二维码内容：把当前页面地址编成 dataURL，并回传它的模块数。
+   ⚠️ 位图尺寸按**本次导出的实际像素**生成，不是在固定"设计栅格"上算一次就复用：
+      1x 导出时多出来的分辨率被浏览器丢掉了还好说，3x 导出时就会被放大到糊掉
+      （QR 是硬边像素图，一插值就采样不到模块）。
+   ⚠️ `margin` 必须是 **0**，静区只由外层白底卡承担。写成 `QUIET_ZONE` 会把静区
+      **算两遍**：库的 `margin` 是"在指定的 width 里内缩"，于是 55px 的画布里 QR 本体
+      只剩 55 × 29/(29+8) ≈ 44px，外面再套一层卡的静区就成了一边 2 模块、一边 4 模块的
+      畸形留白 —— 版式按 qs 算出的本体尺寸与出图的真实模块边长对不上，
+      模块被压到 1.5px 以下，噪点一多就扫不出来。
+      `width` 给的就是**QR 本体**的像素宽，模块边长 = width / 模块数。 */
+async function headerQrURL(pxSize) {
+  try {
+    const mod = await loadQr();
+    if (!mod || typeof mod.toCanvas !== 'function') return null;
+    // 先创建一次拿到模块数（版式要按它换算），再按最终像素出图
+    const qrObj = mod.create ? mod.create(qrURL(location.href), { errorCorrectionLevel: 'M' }) : null;
+    const modules = qrObj && qrObj.modules ? qrObj.modules.size : 0;
+    const off = document.createElement('canvas');
+    await mod.toCanvas(off, qrURL(location.href), {
+      margin: 0, width: Math.max(8, Math.round(pxSize)), errorCorrectionLevel: 'M',
+      color: { dark: '#17181c', light: '#ffffff' },
+    });
+    return { url: off.toDataURL('image/png'), modules };
+  } catch (err) {
+    console.warn('[署名条] 二维码不可用，本次导出只保留软件名', err);
+    return null;
+  }
+}
+
+/* 署名条就绪（文案 + 二维码都到位）。`outW` 是本次导出图宽，
+   二维码位图按 `outW × qs` 生成，与 `--hdr-w` 同一基准。
+   ⚠️ 顺序不能反：先生成二维码（才知道模块数）→ 据此建版式 → 再填图。
+      版式依赖模块数，模块数依赖二维码内容，内容依赖当前地址。
+   ⚠️ 位图尺寸又依赖版式里的 qs，于是这里必然要生成两轮：
+      第一轮只为拿模块数（用无码版式的估值就行，像素宽无所谓），
+      第二轮才按 `模块数 × mod` 出的真实尺寸出一张 —— 且第二轮就是把第一轮
+      的尺寸修回来，所以生成 ≤ 2 次、且不受"地址长短"影响。
+   ⚠️ 刻意**不做缓存**：缓存要连模块数一起当键，省下的只是几十毫秒，
+      而键写漏一处（比如只按尺寸）就会留下"地址改长了、二维码还是旧的"这种鬼影。 */
+async function prepareHeader(outW) {
+  if (!P.exportHeader) return null;
+  syncHeaderSkin();
+  HEADER_LAYOUT_DOM.tA.textContent = T('app.titleA');
+  HEADER_LAYOUT_DOM.tB.textContent = T('app.titleB');
+
+  // 位图尺寸就按版式里的 qs（**QR 本体**的像素宽），不做额外放大：
+  // 显示尺寸由 `qr.style.width = qs` 决定，位图与它同值才是 1:1 像素对齐的。
+  // ⚠️ 别在这里"为了更清晰"把位图放大：QR 是硬边像素图，非整数倍放大后每个模块
+  //    不再是整数像素，渲染时反而会糊掉边界、把扫码器骗过去。
+  const byPixels = px => Math.max(8, Math.round(px));
+  // 第一轮：按"无码版式"的估值出图，只为拿到模块数
+  let data = await headerQrURL(byPixels(headerLayout().qs * outW));
+  if (data && data.modules) {
+    // 第二轮：按真实模块数定版式，再出一张恰好"每模块整数像素"的位图
+    const L = headerLayout(data.modules);
+    data = await headerQrURL(byPixels(L.qs * outW));
+  }
+  buildHeaderDom(data ? data.modules : 0);
+  const { card, qr } = HEADER_LAYOUT_DOM;
+  if (data && data.url) {
+    qr.src = data.url;
+    card.style.display = 'flex';
+    await qr.decode().catch(() => {});
+    return data.url;
+  }
+  qr.removeAttribute('src');
+  card.style.display = 'none';
+  return null;
+}
 
 /* ================= 贴图 ================= */
 let tex1 = null, tex2 = null;
@@ -2071,6 +2281,10 @@ function guardedRebuild(body) {
     geoGuardActive = false;
   }
 }
+// 冒烟测试用：替换二维码模块，让导出路径摆脱 CDN 依赖（与 __geoFaultOnce 同一约定：
+// 只暴露一个注入动作）。传 null 复位成真实加载。⚠️ 必须在页面加载后再调 —— 挂在
+// 模块顶层会先于 script 就绪，冒烟脚本 evaluate 时反而读不到（实测）。
+window.__setQrModule = __setQrModule;
 // 冒烟测试用：读取几何参数与兜底状态（只读快照，不做任何写操作，与 window.padGeoInfo 同一约定）
 window.__geoState = () => ({
   ...Object.fromEntries(GEO_PARAM_KEYS.map(k => [k, k === 'classicCtrl' ? undefined : P[k]])),
@@ -2558,7 +2772,23 @@ texControls(document.getElementById('tex2Ctrls'), 't2', 'tex.group2');
   const el = document.getElementById('exportCtrls');
   checkRow(el, 'ctl.transparent', () => P.transparent, v => applyParam('transparent', v));
   colorRow(el, 'ctl.bg', () => P.bg, v => applyParam('bg', v));
-  checkRow(el, 'ctl.exportTransparent', () => P.exportTransparent, v => applyParam('exportTransparent', v));
+  // 「署名条留空底」只在"导出透明"打开时才有意义：画面本就有底色时它必然实心。
+  // checkRow 返回的是行内控件，取 .row 才是整行（显隐要作用在行上）。
+  // ⚠️ 显隐必须在**变更时**也算一遍（走 applyParamThen 的 extra），
+  //    只推给 uiSyncers 是不够的 —— 那个数组只在导入配置 / 恢复草稿时遍历，
+  //    用户当场勾「导出时透明背景」时这一行不会出现（实测）。
+  const hdrClearRow = checkRow(el, 'ctl.exportHeaderTransparent', () => P.exportHeaderTransparent,
+    v => applyParam('exportHeaderTransparent', v)).closest('.row');
+  const syncHeaderClear = () => {
+    hdrClearRow.style.display = (P.exportHeader && P.exportTransparent) ? '' : 'none';
+  };
+  checkRow(el, 'ctl.exportTransparent', () => P.exportTransparent,
+    v => applyParamThen('exportTransparent', v, syncHeaderClear));
+  // 署名条（软件名 + 当前页面二维码）。默认开启 —— 需求就是"默认打开"。
+  checkRow(el, 'ctl.exportHeader', () => P.exportHeader,
+    v => applyParamThen('exportHeader', v, syncHeaderClear));
+  syncHeaderClear();
+  uiSyncers.push(syncHeaderClear);
   selectRow(el, 'ctl.exportScale', [['1','1x'],['2','2x'],['3','3x']], () => String(P.exportScale), v => applyParam('exportScale', +v));
   // 配置名称：用于导出文件名
   {
@@ -2664,8 +2894,9 @@ texControls(document.getElementById('tex2Ctrls'), 't2', 'tex.group2');
       const act = e.target.getAttribute('data-act');
       if (!act) return;
       closeAllDD();
-      if (act === 'preview') exportPNG();
-      else if (act === 'model') exportModelPNG();
+      // 两个图片导出都是 async（署名条要等二维码模块）：接住 rejection，别让它变成未捕获错误
+      if (act === 'preview') exportPNG().catch(e => console.error('[导出预览图]', e));
+      else if (act === 'model') exportModelPNG().catch(e => console.error('[导出模型渲染图]', e));
       else if (act === 'glb' || act === 'stl' || act === 'obj') exportModel3D(act);
       else if (act === 'exportJson') exportConfigJSON();
       else if (act === 'exportZip') exportConfigZip();
@@ -3381,7 +3612,94 @@ curveLayer.addEventListener('contextmenu', e => {
 // 取当前渲染用的相机（编辑态用正交相机，否则透视相机），与动画循环保持一致
 function activeCam() { return (curveEdit && orthoCam) ? orthoCam : camera; }
 
-function exportPNG(opts) {
+// 署名条在导出图里的高度（像素）。全仓库**唯一**的换算点：只由图宽决定，
+// 与导出倍率、与窗口尺寸都无关。返回 0 = 本次不带署名条。
+function headerTopPx(width) {
+  return P.exportHeader ? Math.round(HEADER_LAYOUT.H * Math.max(1, Math.round(width))) : 0;
+}
+
+/* 给导出图叠署名条。失败一律返回原图 —— 署名条是附加产物，
+   不能因为一次截图或一次 CDN 拉取把正常的导出搞砸。
+
+   署名条是**一段真实 DOM**（见上一节），用 `html-to-image` 把它单独截成一张位图，
+   再贴到导出图的顶部。之所以不给整个 #stage 截图：
+   截整页会把页面上的浮层（工具栏 / 抽屉 / 提示条）一起拍进去，且要求画布在这期间
+   一直是"导出态"，异常恢复的窗口越开越大。分成两步后，导出路径原有的 try/finally
+   一行都不用改，署名条自己失败也只是少一条横幅。 */
+async function withHeader(baseCanvas) {
+  if (!P.exportHeader || !baseCanvas) return baseCanvas;
+  const outW = baseCanvas.width;
+  const Hpx = headerTopPx(outW);          // 署名条高度只由图宽决定，与导出倍率无关
+  if (!Hpx) return baseCanvas;
+  let banner = null;
+  try {
+    banner = await renderHeaderBanner(outW, Hpx);
+  } catch (err) {
+    console.warn('[署名条] 合成失败，已按原图导出', err);
+  }
+  if (!banner) return baseCanvas;
+  const out = document.createElement('canvas');
+  out.width = outW;
+  out.height = baseCanvas.height + Hpx;
+  const g = out.getContext('2d');
+  g.drawImage(banner, 0, 0, outW, Hpx);
+  g.drawImage(baseCanvas, 0, Hpx);
+  return out;
+}
+
+/* 把署名条那段 DOM 截成位图。实现走 `html-to-image`：它把目标节点的样式与内嵌图片
+   序列化成一个 SVG foreignObject，再交给 `<img>` 解码 —— 只要不引外部字体，
+   就完全离线可用，且**样式与页面同源**（颜色走 :root 的 token，改主题导出图跟着变）。 */
+async function renderHeaderBanner(outW, Hpx) {
+  const box = HEADER_LAYOUT_DOM.box;
+  const mount = box.isConnected ? box : document.body.appendChild(box);
+  const prevDisplay = mount.style.display;
+  // ⚠️ `--hdr-w` 是**唯一的尺寸基准**，必须与最终出图宽度一致：
+  //    署名条内部所有长度都写成 `calc(k * var(--hdr-w))`，写小了这个变量，
+  //    整个横幅（含字号）都会按比例缩小 —— 而白底、二维码这些"自己带尺寸"的部分
+  //    看起来又是对的，症状是"署名条整体偏小、左边留一大块空"。
+  mount.style.setProperty('--hdr-w', outW + 'px');
+  // 截图目标必须真实可见：display:none / visibility:hidden 下量到的盒子全为 0
+  mount.style.display = 'flex';
+  try {
+    await prepareHeader(outW);
+    const mod = await loadImageLib();
+    if (!mod) return null;
+    // 字体就绪后再截：字体晚到时量出来的宽度是回退字体的，文字会挤在一起
+    if (document.fonts && document.fonts.ready) await document.fonts.ready.catch(() => {});
+    const cv = await mod.toCanvas(mount, {
+      width: outW, height: Hpx,
+      canvasWidth: outW, canvasHeight: Hpx,
+      pixelRatio: 1,
+      // 直接把最终尺寸喂进去，不让库再按 DOM 盒子做一次换算
+      style: { width: outW + 'px', height: Hpx + 'px', left: '0', top: '0' },
+      skipFonts: false,
+    });
+    return cv;
+  } finally {
+    // ⚠️ 恢复成 `none` 而不是"恢复成调用前的值"：署名条**常驻在 #stage 上**，
+    //    只在导出的那一瞬间显形。靠"调用前是什么就恢复成什么"的话，
+    //    第一次调用（它当时还是初始的 flex）会把它永久留在画面里。
+    mount.style.display = prevDisplay === 'flex' ? 'flex' : 'none';
+  }
+}
+
+/* html-to-image 按需加载（与 three / qrcode 同一条路径）。
+   它把目标节点的样式与内嵌图片序列化成一个 SVG foreignObject，
+   再交给 <img> 解码 —— 故只要不引外部字体，就完全离线可用。 */
+const IMAGE_LIB = 'html-to-image';
+const IMAGE_LIB_CDN = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.13/+esm';
+let imgLibTask = null;
+function loadImageLib() {
+  if (!imgLibTask) {
+    imgLibTask = import(/* @vite-ignore */ IMAGE_LIB)
+      .catch(() => import(/* @vite-ignore */ IMAGE_LIB_CDN))
+      .catch(e => { console.warn('[署名条] html-to-image 不可用，本次导出按原图', e); return null; });
+  }
+  return imgLibTask;
+}
+
+async function exportPNG(opts) {
   const download = !opts || opts.download !== false;
   ensureFullQuality();   // P1-3：导出必须是全质量几何，不能把 LOD 预览的低精度版本写进图片
   const scale = P.exportScale;
@@ -3403,17 +3721,24 @@ function exportPNG(opts) {
       P.transparent = P.exportTransparent;
       updateBackground();
     }
+    // 「署名条不留底色」：只在导出透明开启时可用（否则画面本就有底色，署名条也必须实心）
+    if (P.exportHeader && P.exportTransparent && P.exportHeaderTransparent) {
+      P.transparent = true;
+      updateBackground();
+    }
     renderer.setPixelRatio(1);
     renderer.setSize(w * scale, h * scale, false);
     renderer.render(scene, useCam);
-    url = renderer.domElement.toDataURL('image/png');
+    // 署名条在**裁切之前**叠：先出纯画面，再补一条横幅，合成后统一编码一次
+    // 预览图不做贴合裁剪（裁的是 stage 整幅），故这里的署名条高度参数无意义
+    url = (await withHeader(renderer.domElement)).toDataURL('image/png');
   } catch (err) {
     console.error('[导出预览图]', err);
     toast(T('exp.previewFailed', { msg: (err && err.message) || err }), 'err');
     return null;
   } finally {
     // 恢复预览状态
-    if (P.exportTransparent !== prevTransparent) {
+    if (P.transparent !== prevTransparent) {
       P.transparent = prevTransparent;
       updateBackground();
     }
@@ -3467,34 +3792,42 @@ function modelNDCRect(objs, cam) {
   return (ok && n) ? { minX, maxX, minY, maxY } : null;
 }
 
-// 按 alpha 裁掉四周完全透明的行/列，返回 PNG dataURL。
+// 按 alpha 裁掉四周完全透明的行/列，返回 canvas（调用方决定编码格式）。
 // 投影矩形是"外接盒"，被遮挡/凹形部分仍可能留下透明边，这一步保证 PNG 严格贴合可见像素。
-function cropTransparentPNG(src) {
+//
+// ⚠️ 只按**画面那部分**（y ≥ topInset）算左右边界。署名条是不透明的，把它算进来的话
+//    裁出来的宽度就成了"画布宽"，而画面本身离画布边缘还有一圈（`PAD` 安全边 + 投影
+//    外接盒的余量）—— 于是横幅比画面宽出一圈，多出来的就是透明边。
+//    topInset = 署名条高度，无署名条时传 0。
+// ⚠️ 上边界也从 topInset 起算，署名条整个保留（它是内容，不是要裁掉的留白）。
+function cropTransparentPNG(src, topInset = 0) {
   const w = src.width, h = src.height;
-  const full = () => src.toDataURL('image/png');
-  let data;
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(src, 0, 0);
-  try { data = ctx.getImageData(0, 0, w, h).data; } catch (e) { return full(); }
-  let minX = w, minY = h, maxX = -1, maxY = -1;
-  for (let y = 0; y < h; y++) {
+  let data;
+  try { data = ctx.getImageData(0, 0, w, h).data; } catch (e) { return c; }
+  const top = Math.max(0, Math.min(h, Math.round(topInset)));
+  // 左右边界只在 top 以下统计；上边界固定为 0（署名条整条保留），下边界在下半部找
+  let minX = w, maxX = -1, maxY = -1, bodyTop = h;
+  for (let y = top; y < h; y++) {
     const row = y * w * 4;
     for (let x = 0; x < w; x++) {
       if (data[row + x * 4 + 3] === 0) continue;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
       if (y > maxY) maxY = y;
+      if (y < bodyTop) bodyTop = y;
     }
   }
-  if (maxX < 0) return full();   // 整张透明：原样返回，避免产出 0 尺寸图
-  if (minX === 0 && minY === 0 && maxX === w - 1 && maxY === h - 1) return full();
+  if (maxX < 0) return c;                 // top 以下整片透明：原样返回，避免产出 0 尺寸图
+  const minY = top > 0 ? 0 : bodyTop;     // 有署名条时从 0 起（横幅整条保留）
+  if (minX === 0 && minY === 0 && maxX === w - 1 && maxY === h - 1) return c;
   const out = document.createElement('canvas');
   out.width = maxX - minX + 1; out.height = maxY - minY + 1;
   out.getContext('2d').drawImage(c, -minX, -minY);
-  return out.toDataURL('image/png');
+  return out;
 }
 
 /* 仅导出模型：保持当前视角，画面精确对齐"模型在当前视角下的屏幕外接矩形"，
@@ -3505,7 +3838,7 @@ function cropTransparentPNG(src) {
    ⚠️ 不要再用世界 AABB 的 size.x / size.y 反推取景：鼠标垫躺在 XZ 平面上，
    size.y 只是厚度（几毫米量级），size.x/size.z 也不是屏幕的横竖方向，
    据此算出的视距与宽高比与实际画面无关，会同时出现"模型被裁切"和"大片透明留白"。 */
-function exportModelPNG(opts) {
+async function exportModelPNG(opts) {
   const download = !opts || opts.download !== false;
   // P1-3：取景（modelNDCRect 逐顶点投影）与出图都依赖几何，必须是全质量
   ensureFullQuality();
@@ -3560,7 +3893,16 @@ function exportModelPNG(opts) {
     cam.updateProjectionMatrix();
 
     renderer.render(scene, cam);
-    url = cropTransparentPNG(renderer.domElement);
+    // ⚠️ 署名条必须在**贴合裁剪之前**叠进来（与 exportPNG 同序）：
+    //    裁剪是按 alpha 找模型可见像素的包围盒，裁完再把"整幅画布宽"的横幅贴上去，
+    //    横幅就会比底图宽出一圈 —— 多出来的部分在 PNG 里就是一条透明边（用户看到
+    //    「多了透明边/白边」）。先叠后裁时横幅本身就是内容，裁出来的宽度天然一致。
+    // ⚠️ 裁的时候还要把**署名条那一段排除在左右边界之外**（topInset）：
+    //    横幅铺满整幅画布，而画面离画布边缘还有一圈安全边 —— 把横幅算进去，
+    //    裁出来的宽度就是"画布宽"，横幅依旧比画面宽，透明边只是变窄了不会消失。
+    const bannerH = headerTopPx(outW);
+    const composed = await withHeader(renderer.domElement);
+    url = cropTransparentPNG(composed, bannerH).toDataURL('image/png');
   } catch (err) {
     console.error('[导出模型渲染图]', err);
     toast(T('exp.modelPngFailed', { msg: (err && err.message) || err }), 'err');
@@ -3577,11 +3919,13 @@ function exportModelPNG(opts) {
     markRenderDirty();   // 画布尺寸被改过，下一帧必须重绘
   }
 
+  // 署名条已经在上面（裁透明边**之前**）叠好了，这里只是按需落盘。
+  const out = url;
   if (download) {
     const a = document.createElement('a');
-    a.href = url; a.download = 'mousepad-3d-model.png'; a.click();
+    a.href = out; a.download = 'mousepad-3d-model.png'; a.click();
   }
-  return url;
+  return out;
 }
 
 /* ================= 3D 模型导出（GLB / STL / OBJ） ================= */

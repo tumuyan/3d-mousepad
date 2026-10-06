@@ -67,6 +67,9 @@ export const P = {
   shadow: false,
   // 背景/导出
   bg: '#e9e7ec', transparent: false, exportTransparent: false, exportScale: 2,
+  // 导出图署名条：软件名 + 当前页面二维码，默认开启（见 src/exportHeader.js）
+  exportHeader: true,            // 是否在导出图顶部叠署名条
+  exportHeaderTransparent: false, // 署名条是否也留空底（只在导出透明开启时有意义）
 };
 
 /* ================= 配置导入校验（缺陷 6） =================
@@ -146,6 +149,8 @@ export const PARAM_SCHEMA = {
   bg:          { t: 'color' , onChange: 'render' },
   transparent: { t: 'bool' , onChange: 'render' },
   exportTransparent: { t: 'bool' , onChange: 'none' },
+  exportHeader:      { t: 'bool' , onChange: 'none' },
+  exportHeaderTransparent: { t: 'bool' , onChange: 'none' },
   exportScale: { t: 'num', min: 1, max: 3, int: true , onChange: 'none' },
 };
 export function sanitizeNum(v, s) {
